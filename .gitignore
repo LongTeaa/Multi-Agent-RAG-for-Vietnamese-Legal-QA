@@ -23,7 +23,7 @@ build/
 
 # === Data (dữ liệu thô và processed) ===
 data/raw/
-data/processed/
+
 # Giữ lại sample data:
 !data/sample/
 
@@ -42,10 +42,22 @@ Thumbs.db
 .ipynb_checkpoints/
 *.ipynb
 
-
-scripts/
-
+# === Temporary & Scratch ===
+scratch/
+langgraph_rag_agent_example.ipynb
 OVERVIEW.md
 SKILLS.md
 WORKFLOW.md
-langgraph_rag_agent_example.ipynb
+
+# === Frontend ===
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# === Unnecessary Tests & Debug Scripts ===
+scripts/test_*.py
+scripts/debug_*.py
+scripts/smoke_*.py
+scripts/verify_*.py
+scripts/explore_*.py
+scripts/test_keys.py
