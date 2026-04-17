@@ -17,7 +17,7 @@ from typing import List
 
 from sentence_transformers import SentenceTransformer
 
-from src.config import EMBEDDING_MODEL, EMBEDDING_DEVICE
+from src.config import EMBEDDING_MODEL, EMBEDDING_DEVICE, VECTOR_SIZE
 from src.utils.logger import logger
 
 # Models cần prefix theo chuẩn e5-instruct
@@ -39,16 +39,56 @@ def _needs_prefix(model_name: str) -> bool:
 def _get_model() -> SentenceTransformer:
     """
     Load SentenceTransformer model một lần duy nhất (singleton via lru_cache).
-    Thread-safe vì Python GIL.
     """
+    import os
+    from src.config import HF_TOKEN
+    
+    # Set HF_TOKEN environment variable để huggingface_hub có thể dùng
+    if HF_TOKEN:
+        os.environ["HF_TOKEN"] = HF_TOKEN
+        logger.debug("[EMBEDDING] Đã set HF_TOKEN từ config")
+    
+    # Kiểm tra nếu người dùng muốn chạy Offline hoàn toàn
+    is_offline = os.environ.get("HF_HUB_OFFLINE") == "1"
+
     logger.info(
-        f"[EMBEDDING] Loading model '{EMBEDDING_MODEL}' on device='{EMBEDDING_DEVICE}'"
+        f"[EMBEDDING] Đang khởi tạo model '{EMBEDDING_MODEL}' trên device='{EMBEDDING_DEVICE}'..."
     )
-    model = SentenceTransformer(EMBEDDING_MODEL, device=EMBEDDING_DEVICE)
-    # Log dimension để debug mismatch với VECTOR_SIZE trong config
-    dim = model.get_sentence_embedding_dimension()
-    logger.info(f"[EMBEDDING] Model loaded. Embedding dimension: {dim}")
-    return model
+    
+    if is_offline:
+        logger.info("[EMBEDDING] Chế độ OFFLINE đang bật. Hệ thống sẽ chỉ sử dụng model đã tải sẵn.")
+    else:
+        logger.info(
+            "[EMBEDDING] LƯU Ý: Nếu chạy lần đầu, quá trình này có thể mất vài phút để tải model. "
+            "Các lần sau sẽ tự động dùng bản cache trên máy."
+        )
+    
+    try:
+        # Load model. 
+        # Token sẽ được tự động nhận từ os.environ["HF_TOKEN"] nếu có.
+        model = SentenceTransformer(
+            EMBEDDING_MODEL, 
+            device=EMBEDDING_DEVICE,
+            trust_remote_code=True
+        )
+        
+        # Log dimension để debug mismatch với VECTOR_SIZE trong config
+        dim = model.get_embedding_dimension()
+        logger.info(f"[EMBEDDING] Model đã tải xong. Embedding dimension: {dim}")
+        
+        if dim != VECTOR_SIZE:
+            logger.warning(f"[EMBEDDING] Mismatch! Model dim {dim} != VECTOR_SIZE {VECTOR_SIZE} in config")
+            
+        return model
+    except Exception as e:
+        logger.error(f"[EMBEDDING] LỖI NGHIÊM TRỌNG: Không thể load model '{EMBEDDING_MODEL}': {e}")
+        
+        # Gợi ý cách fix nếu là lỗi mạng/auth
+        if "unauthorized" in str(e).lower() or "not found" in str(e).lower():
+            logger.error("[EMBEDDING] Kiểm tra lại HF_TOKEN hoặc kết nối mạng đến Hugging Face.")
+            
+        # Re-raise để caller (agent) biết và handle
+        raise RuntimeError(f"Could not initialize embedding model: {e}")
 
 
 def embed_texts(texts: List[str]) -> List[List[float]]:
@@ -81,7 +121,7 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
         inputs,
         normalize_embeddings=True,
         show_progress_bar=False,
-        batch_size=32,           # Tối ưu RAM khi encode batch lớn
+        batch_size=8,            # Giảm từ 32 → 8 để tiết kiệm RAM (fix 'paging file too small')
     )
     return embeddings.tolist()
 
@@ -151,9 +191,49 @@ def tokenize_for_bm25(text: str) -> List[str]:
     return tokens
 
 
+def generate_sparse_vector(text: str) -> dict:
+    """
+    Tạo sparse vector (keyword-based) từ văn bản.
+    Sử dụng hashing để chuyển token thành index và tính toán tần suất (term frequency).
+
+    Args:
+        text: Văn bản cần xử lý
+
+    Returns:
+        Dict: {"indices": List[int], "values": List[float]} chuẩn Qdrant
+    """
+    import zlib
+    from collections import Counter
+
+    tokens = tokenize_for_bm25(text)
+    if not tokens:
+        return {"indices": [], "values": []}
+
+    # Đếm tần suất
+    counts = Counter(tokens)
+    total = sum(counts.values())
+
+    indices = []
+    values = []
+
+    for token, count in counts.items():
+        # Hash token thành 32-bit integer (unsigned)
+        # Qdrant dùng uint32 cho sparse indices
+        idx = zlib.adler32(token.encode("utf-8")) & 0xFFFFFFFF
+        indices.append(idx)
+        # Term Frequency đơn giản (count / total)
+        values.append(float(count / total))
+
+    # Qdrant yêu cầu indices phải được sắp xếp tăng dần trong 1 số phiên bản
+    combined = sorted(zip(indices, values))
+    indices = [c[0] for c in combined]
+    values = [c[1] for c in combined]
+
+    return {"indices": indices, "values": values}
+
+
 def get_vector_size() -> int:
     """
-    Trả về kích thước vector của embedding model.
-    intfloat/multilingual-e5-large-instruct: 1024
+    Trả về kích thước vector của embedding model từ config.
     """
-    return 1024
+    return VECTOR_SIZE

@@ -19,7 +19,7 @@ class Document(TypedDict):
     score: float    # Relevance score từ Hybrid Search
 
 
-class GraphState(TypedDict):
+class GraphState(TypedDict, total=False):
     """
     Trạng thái chia sẻ toàn bộ LangGraph.
 
