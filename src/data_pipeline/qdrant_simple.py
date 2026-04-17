@@ -34,13 +34,22 @@ class QdrantSimpleClient:
             create_url = f"{self.base_url}/collections/{collection_name}"
             payload = {
                 "vectors": {
-                    "size": vector_size,
-                    "distance": "Cosine",
-                    "hnsw_config": {
-                        "m": 16,
-                        "ef_construct": 200,
-                    },
+                    "default": {  # Named vector "default" for dense
+                        "size": vector_size,
+                        "distance": "Cosine",
+                        "hnsw_config": {
+                            "m": 16,
+                            "ef_construct": 200,
+                        },
+                    }
                 },
+                "sparse_vectors": {
+                    "bm25": {  # Named sparse vector "bm25"
+                        "index": {
+                            "on_disk": True
+                        }
+                    }
+                }
             }
             resp = self.session.put(create_url, json=payload)
             resp.raise_for_status()
@@ -127,6 +136,7 @@ def upsert_chunks_simple(
         Number of upserted points
     """
     client = QdrantSimpleClient(host, port)
+    from src.utils.embedding import generate_sparse_vector
 
     # Delete if recreate
     if recreate:
@@ -147,12 +157,19 @@ def upsert_chunks_simple(
         point_id = int(uuid.uuid4().int % (2**63 - 1))
         payload = {
             k: v for k, v in chunk.items()
-            if k not in ["vector", "chunk_index"]
+            if k not in ["vector", "chunk_index", "content"]
         }
+        payload["chunk_text"] = chunk.get("content", "")
+
+        # Generate sparse vector
+        sparse_vec = generate_sparse_vector(chunk.get("content", ""))
 
         points.append({
             "id": point_id,
-            "vector": chunk["vector"],
+            "vector": {
+                "default": chunk["vector"],
+                "bm25": sparse_vec
+            },
             "payload": payload,
         })
 

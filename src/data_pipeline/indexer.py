@@ -30,7 +30,7 @@ from src.config import (
     VECTOR_SIZE,
 )
 from src.utils.logger import logger
-from src.utils.embedding import embed_texts, embed_query, tokenize_for_bm25
+from src.utils.embedding import embed_texts, embed_query, tokenize_for_bm25, generate_sparse_vector
 
 
 @dataclass
@@ -38,7 +38,7 @@ class IndexConfig:
     """Cấu hình cho Qdrant indexing."""
     collection_name: str = COLLECTION_NAME
     vector_size: int = VECTOR_SIZE
-    batch_size: int = 32  # Batch size cho embedding
+    batch_size: int = 8   # Giảm từ 32 → 8 để tiết kiệm RAM
     hnsw_m: int = 16      # HNSW m parameter
     hnsw_ef_construct: int = 200  # HNSW ef_construct
     recreate: bool = False  # Xóa collection cũ trước khi tạo
@@ -50,7 +50,7 @@ def get_qdrant_client(
     api_key: Optional[str] = QDRANT_API_KEY,
 ) -> QdrantClient:
     """
-    Khởi tạo Qdrant client (singleton-like).
+    Khởi tạo Qdrant client (singleton-like). Xử lý encoding issues trên Windows.
 
     Args:
         host: Qdrant server host
@@ -62,23 +62,59 @@ def get_qdrant_client(
     """
     import os
     import sys
-    # Redirect stderr to suppress httpx encoding warnings
-    old_stderr = sys.stderr
-    try:
-        sys.stderr = open(os.devnull, 'w')
-        
-        url = f"http://{host}:{port}"
-        api_key = api_key if api_key else None
-        
-        # Suppress logging during client creation
-        import logging
-        logging.disable(logging.CRITICAL)
-        
+    import io
+    import warnings
+    
+    # FIX 1: Buộc UTF-8 environment variable
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    
+    # FIX 2: Khôi phục stdout/stderr với UTF-8 nếu cần
+    if sys.platform == "win32":
         try:
-            client = QdrantClient(url=url, api_key=api_key)
-        finally:
-            logging.disable(logging.NOTSET)
-            
+            if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding.lower() != 'utf-8':
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', newline='')
+            if not isinstance(sys.stderr, io.TextIOWrapper) or sys.stderr.encoding.lower() != 'utf-8':
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', newline='')
+        except Exception:
+            pass  # Bỏ qua nếu không thể khôi phục
+    
+    # FIX 3: Patch httpx để sử dụng UTF-8 mặc định
+    try:
+        import httpx
+        httpx.AsyncClient.__init__.__defaults__ = (
+            None,  # auth
+            None,  # cookies
+            None,  # headers
+            None,  # params
+            None,  # timeout
+            None,  # follow_redirects
+            None,  # allow_redirects
+            None,  # limits
+            None,  # proxy
+            None,  # proxies
+            None,  # mounts
+            None,  # trust_env
+            None,  # event_hooks
+            "utf-8",  # ← Buộc UTF-8 cho HTTP client
+        )
+    except Exception:
+        pass  # Nếu không thể patch, continue
+    
+    # FIX 4: Suppress encoding warnings
+    warnings.filterwarnings('ignore', message='.*ascii.*')
+    warnings.filterwarnings('ignore', message='.*codec.*')
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
+    
+    url = f"http://{host}:{port}"
+    api_key = api_key if api_key else None
+    
+    try:
+        # FIX 5: Suppress httpx/urllib3 logging để tránh verbose output
+        import logging
+        for module_name in ['httpx', 'urllib3', 'qdrant_client']:
+            logging.getLogger(module_name).setLevel(logging.CRITICAL)
+        
+        client = QdrantClient(url=url, api_key=api_key, timeout=30.0)
         logger.info(f"[INDEXER] Connected to Qdrant http://{host}:{port}")
         return client
 
@@ -86,8 +122,6 @@ def get_qdrant_client(
         error_msg = str(e)[:100]
         logger.error(f"[INDEXER] Qdrant connection failed: {error_msg}")
         raise
-    finally:
-        sys.stderr = old_stderr
 
 
 def create_collection(
@@ -125,17 +159,19 @@ def create_collection(
 
         client.recreate_collection(
             collection_name=config.collection_name,
-            vectors_config=VectorParams(
-                size=config.vector_size,
-                distance=Distance.COSINE,
-                hnsw_config=HnswConfigDiff(
-                    m=config.hnsw_m,
-                    ef_construct=config.hnsw_ef_construct,
-                ),
-            ),
+            vectors_config={
+                "default": VectorParams(
+                    size=config.vector_size,
+                    distance=Distance.COSINE,
+                    hnsw_config=HnswConfigDiff(
+                        m=config.hnsw_m,
+                        ef_construct=config.hnsw_ef_construct,
+                    ),
+                )
+            },
             sparse_vectors_config={
                 "bm25": SparseVectorParams(
-                    index=SparseIndexParams(on_disk=False)
+                    index=SparseIndexParams(on_disk=True)  # Bật on_disk để tối ưu hiệu năng
                 )
             },
         )
@@ -211,15 +247,15 @@ def upsert_chunks(
         }
         payload["chunk_text"] = chunk["content"]  # Store content với tên payload
 
-        # Tạo sparse vector (BM25 tokenization)
-        tokens = tokenize_for_bm25(chunk["content"])
-        # Qdrant sẽ tự handle BM25 scoring, ta chỉ cần provide token indices
-        # Simplified: dùng token indices as sparse representation
-        sparse_indices = list(range(len(tokens)))[:100]  # Top 100 tokens (limit)
+        # Tạo sparse vector thật sự (hashing + TF)
+        sparse_vec = generate_sparse_vector(chunk["content"])
 
         point = PointStruct(
             id=point_id,
-            vector=embedding,
+            vector={
+                "default": embedding,
+                "bm25": sparse_vec
+            },
             payload=payload,
         )
         points.append(point)
