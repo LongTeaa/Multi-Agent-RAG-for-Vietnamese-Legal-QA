@@ -96,15 +96,14 @@ graph LR
 ## Công nghệ sử dụng
 
 - **Framework**: LangGraph, FastAPI
-- **LLMs**: Claude 3.5 Sonnet, GPT-4o, Gemini 1.5/2.0
+- **LLMs**: Gemini 2.0/2.5
 - **Vector Database**: Qdrant
-- **Embedding Models**: intfloat/multilingual-e5-large-instruct, BGE-M3
+- **Embedding Models**: paraphrase-multilingual-MiniLM-L12-v2
 - **Frontend**: React, Vite, Tailwind CSS
 
 ---
 
-## Cấu trúc thư mục chi tiết
-
+## Cấu trúc thư mục
 ```text
 .
 ├── api/                        # Khởi tạo FastAPI server và định nghĩa các routers
