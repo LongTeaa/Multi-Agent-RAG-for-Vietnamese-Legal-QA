@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from src.graph.graph import app as graph_app
+from src.graph.runtime_store import get_citations, get_web_results
 from src.graph.state import create_initial_state
 from src.models.request import QuestionRequest
 from src.models.response import AnswerResponse, StreamEvent, Citation, WebResult
@@ -155,8 +156,14 @@ def _map_state_to_response(state: dict, processing_time: int) -> AnswerResponse:
     return AnswerResponse(
         question=state.get("question", ""),
         answer=answer,
-        citations=[Citation(**c) for c in state.get("citations", [])] if state.get("citations") else [],
-        web_results=[WebResult(**w) for w in state.get("web_results", [])] if state.get("web_results") else [],
+        citations=[
+            Citation(**{key: c.get(key) for key in ("text", "source", "position") if key in c})
+            for c in get_citations(state)
+        ],
+        web_results=[
+            WebResult(**{key: w.get(key) for key in ("url", "title", "content", "source_type") if key in w})
+            for w in get_web_results(state)
+        ],
         confidence=confidence,
         intent=state.get("intent"),
         intent_confidence=state.get("intent_confidence"),

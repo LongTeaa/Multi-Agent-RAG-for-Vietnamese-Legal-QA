@@ -1,87 +1,106 @@
 """
 src/graph/state.py
-Định nghĩa GraphState – trạng thái chia sẻ giữa tất cả các agent trong LangGraph.
+Lightweight shared state for the LangGraph workflow.
+
+Phase 4 keeps large payloads (document text, web snippets, debug history) out
+of GraphState. Agents pass compact ids through the graph and fetch full context
+from src.graph.runtime_store when needed.
 """
-from typing import TypedDict, List, Optional, Literal
+from typing import Literal, Optional, TypedDict
+from uuid import uuid4
 
 
-class Citation(TypedDict):
-    """Trích dẫn nguồn trong câu trả lời."""
-    text: str       # Đoạn trích dẫn (ví dụ: "Theo Điều 105, Khoản 1, BLLĐ 2019")
-    source: str     # Tên tài liệu (ví dụ: "Bộ luật Lao động 2019 - Điều 105, Khoản 1")
-    position: int   # Vị trí xuất hiện trong answer (0-indexed)
+class Citation(TypedDict, total=False):
+    """Citation source in the generated answer."""
+    text: str
+    source: str
+    position: int
+    url: str
+    source_id: str
+    citation_id: str
+    metadata: dict
 
 
 class Document(TypedDict):
-    """Tài liệu pháp lý được truy xuất từ Qdrant."""
+    """Retrieved legal document payload kept for backward compatibility only."""
     content: str
-    metadata: dict  # so_hieu_van_ban, ten_van_ban, dieu, khoang, ...
-    score: float    # Relevance score từ Hybrid Search
+    metadata: dict
+    score: float
 
 
 class GraphState(TypedDict, total=False):
-    """
-    Trạng thái chia sẻ toàn bộ LangGraph.
+    """Compact state shared by all LangGraph agents."""
 
-    Mỗi agent đọc state → xử lý → trả về state đã cập nhật.
-    """
-    # ── INPUT ────────────────────────────────────────────────────
+    # Input and tracing
+    request_id: str
+    trace_id: str
     question: str
     user_id: Optional[str]
 
-    # ── ROUTER AGENT ─────────────────────────────────────────────
+    # Router
     intent: Optional[Literal["legal_query", "procedural", "out_of_scope", "general_chat"]]
     intent_confidence: Optional[float]
 
-    # ── RETRIEVER ────────────────────────────────────────────────
-    documents: Optional[List[Document]]
+    # Retrieval coordination
+    query_filters: Optional[dict]
+    query_preferences: Optional[dict]
+    retrieved_chunk_ids: Optional[list[str]]
+    retrieved_scores: Optional[dict[str, float]]
+    selected_context_ids: Optional[list[str]]
 
-    # ── GRADER AGENT (CRAG) ──────────────────────────────────────
+    # Grader
     grader_verdict: Optional[Literal["yes", "no"]]
     grader_score: Optional[float]
 
-    # ── WEB SEARCHER AGENT ───────────────────────────────────────
-    web_results: Optional[List[dict]]   # [{content: str, url: str}, ...]
+    # Web search coordination
+    web_result_ids: Optional[list[str]]
 
-    # ── GENERATOR AGENT ──────────────────────────────────────────
+    # Generator
     answer: Optional[str]
-    citations: Optional[List[Citation]]
+    citation_ids: Optional[list[str]]
     confidence: Optional[float]
 
-    # ── HALLUCINATION GRADER AGENT ───────────────────────────────
+    # Hallucination grader
     hallucination_verdict: Optional[Literal["pass", "fail"]]
-    hallucinations: Optional[str]       # Mô tả ảo giác phát hiện được
+    hallucinations: Optional[str]
 
-    # ── CONTROL ──────────────────────────────────────────────────
-    generation_attempt: int             # Đếm số lần generate (max = MAX_RETRIES)
-    error: Optional[str]                # Thông báo lỗi nếu có
+    # Control
+    generation_attempt: int
+    hallucination_retry_count: int
+    error: Optional[str]
+
+    # Legacy payload fields. New workflow code should avoid returning these in
+    # node updates; API mappers may still read them for old saved states/tests.
+    documents: Optional[list[Document]]
+    web_results: Optional[list[dict]]
+    citations: Optional[list[Citation]]
 
 
 def create_initial_state(question: str, user_id: str = "") -> GraphState:
-    """
-    Tạo state khởi tạo cho một request mới.
-
-    Args:
-        question: Câu hỏi pháp lý của người dùng
-        user_id:  Identifier của user (tùy chọn)
-
-    Returns:
-        GraphState với tất cả optional fields = None
-    """
+    """Create a compact initial state for one request."""
+    request_id = f"req_{uuid4().hex}"
     return GraphState(
+        request_id=request_id,
+        trace_id=request_id,
         question=question,
         user_id=user_id or None,
         intent=None,
         intent_confidence=None,
-        documents=None,
+        query_filters=None,
+        query_preferences=None,
+        retrieved_chunk_ids=None,
+        retrieved_scores=None,
+        selected_context_ids=None,
         grader_verdict=None,
         grader_score=None,
-        web_results=None,
+        web_result_ids=None,
         answer=None,
-        citations=None,
+        citation_ids=None,
         confidence=None,
         hallucination_verdict=None,
         hallucinations=None,
         generation_attempt=0,
+        hallucination_retry_count=0,
         error=None,
     )
+

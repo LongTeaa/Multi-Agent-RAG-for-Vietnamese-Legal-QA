@@ -8,6 +8,7 @@ hoặc Vector DB không có thông tin đủ. Sử dụng Tavily API.
 from typing import Dict, Any, List
 import os
 from src.utils.logger import logger
+from src.graph.runtime_store import put_web_results
 from src.graph.state import GraphState
 
 # Try multiple import names (different versions of langchain-tavily)
@@ -158,11 +159,12 @@ def web_searcher_node(state: GraphState) -> Dict[str, Any]:
     """
     try:
         question = state.get("question", "")
+        trace_id = state.get("trace_id") or state.get("request_id") or ""
         
         if not question:
             logger.error("No question provided to web_searcher")
             return {
-                "web_results": [],
+                "web_result_ids": [],
                 "error": "Missing question"
             }
         
@@ -173,7 +175,7 @@ def web_searcher_node(state: GraphState) -> Dict[str, Any]:
         if tool is None:
             logger.warning("Tavily tool not available, returning empty results")
             return {
-                "web_results": [],
+                "web_result_ids": [],
                 "error": "Tavily API key not configured"
             }
         
@@ -186,7 +188,7 @@ def web_searcher_node(state: GraphState) -> Dict[str, Any]:
         except Exception as e:
             logger.error("Tavily search failed: {}", e)
             return {
-                "web_results": [],
+                "web_result_ids": [],
                 "error": f"Web search failed: {str(e)}"
             }
         
@@ -197,15 +199,16 @@ def web_searcher_node(state: GraphState) -> Dict[str, Any]:
             logger.warning("[WEB_SEARCHER] Formatting returned zero results from raw data")
         
         logger.info(f"Retrieved {len(web_results)} web results")
+        web_result_ids = put_web_results(trace_id, web_results)
         
         return {
-            "web_results": web_results,
+            "web_result_ids": web_result_ids,
             "error": None
         }
         
     except Exception as e:
         logger.error("Error in web_searcher_node: {}", e, exc_info=True)
         return {
-            "web_results": [],
+            "web_result_ids": [],
             "error": f"Web searcher failed: {str(e)}"
         }

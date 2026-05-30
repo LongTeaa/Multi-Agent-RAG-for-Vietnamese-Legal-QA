@@ -8,6 +8,7 @@ truy xuất được so với câu hỏi. Trả về verdict: "yes" (đủ) ho�
 from typing import Dict, Any, List
 from src.utils.llm_factory import get_model_with_fallback, parse_json_response
 from src.utils.logger import logger
+from src.graph.runtime_store import get_documents
 from src.graph.state import GraphState
 
 
@@ -85,7 +86,7 @@ def grader_node(state: GraphState) -> Dict[str, Any]:
     """
     try:
         question = state.get("question", "")
-        documents = state.get("documents", [])
+        documents = get_documents(state)
         
         if not documents:
             logger.warning("No documents to grade")
