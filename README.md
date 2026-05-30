@@ -9,6 +9,28 @@ Hệ thống Chatbot pháp lý thông minh sử dụng kiến trúc Multi-Agent 
 
 ---
 
+## Gemini Key Rotation Observability
+
+He thong khong gan co dinh "moi agent mot key". Thay vao do,
+`get_model_with_fallback(purpose=...)` hash ten agent/purpose de chon
+`primary_key_index` on dinh, roi thu cac key con lai lam fallback.
+
+Khai bao key trong `.env`:
+- `GEMINI_API_KEY`
+- `GEMINI_API_KEY_1` ... `GEMINI_API_KEY_10`
+
+Log chi ghi index, khong ghi raw API key:
+```text
+[LLM] agent=generator model=gemini-1.5-flash primary_key_index=2 fallback_key_indices=[3, 0, 1] json_mode=True
+[LLM] agent=generator key_index=2 failed reason=quota/rate_limit
+[LLM] agent=generator key_index=3 succeeded
+```
+
+Kiem tra fallback ma khong goi Gemini that:
+```bash
+python scripts/test_key_rotation_observability.py
+```
+
 ## Tính năng nổi bật
 
 - **Kiến trúc Multi-Agent**: Sử dụng 6 Agent chuyên biệt phối hợp qua đồ thị có chu trình (Cyclic Graph) để xử lý các tác vụ phức tạp.
@@ -172,7 +194,9 @@ pip install -r requirements.txt
 
 ### 3. Cấu hình hệ thống
 Sao chép file `.env.example` thành `.env` và cập nhật các thông số:
-- `GOOGLE_API_KEY`: API Key cho Gemini 
+- `GEMINI_API_KEY`: Gemini API key chinh
+- `GEMINI_API_KEY_1` ... `GEMINI_API_KEY_10`: cac Gemini API key du phong de phan phoi tai va fallback khi gap quota/rate limit
+
 - `TAVILY_API_KEY`: API Key phục vụ tìm kiếm Web
 - `QDRANT_URL`: URL của Qdrant server
 

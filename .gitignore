@@ -48,6 +48,7 @@ langgraph_rag_agent_example.ipynb
 OVERVIEW.md
 SKILLS.md
 WORKFLOW.md
+RAG_IMPROVEMENT_PLAN.md
 
 # === Frontend ===
 frontend/node_modules/
@@ -61,3 +62,6 @@ scripts/smoke_*.py
 scripts/verify_*.py
 scripts/explore_*.py
 scripts/test_keys.py
+scripts/sync_*.py
+
+data/processed/chunks.jsonl
