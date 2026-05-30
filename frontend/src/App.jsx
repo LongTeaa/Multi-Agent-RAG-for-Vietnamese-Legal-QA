@@ -40,6 +40,7 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentStatus, setCurrentStatus] = useState(null); // {node, message}
   const [streamingAnswer, setStreamingAnswer] = useState(null); 
+  const streamingAnswerRef = useRef(null);
   const messagesEndRef = useRef(null);
   const isProcessingRef = useRef(false); // Tránh bị double add message khi stream kết thúc
 
@@ -63,14 +64,16 @@ function App() {
     setInput('');
     setIsStreaming(true);
     setCurrentStatus({ node: 'start', message: 'Đang khởi tạo...' });
-    setStreamingAnswer({ 
+    const initialStreamingAnswer = { 
       role: 'assistant', 
       content: '', 
       status: 'loading',
       steps: [], 
       web_results: [],
       citations: []
-    });
+    };
+    streamingAnswerRef.current = initialStreamingAnswer;
+    setStreamingAnswer(initialStreamingAnswer);
 
     let eventSource = null;
     try {
@@ -84,7 +87,9 @@ function App() {
           setStreamingAnswer(prev => {
             if (!prev) return prev;
             if (prev.steps.includes(data.node)) return prev;
-            return { ...prev, steps: [...prev.steps, data.node] };
+            const next = { ...prev, steps: [...prev.steps, data.node] };
+            streamingAnswerRef.current = next;
+            return next;
           });
         } catch (e) {
           console.error("Error parsing status event:", e);
@@ -94,16 +99,15 @@ function App() {
       eventSource.addEventListener('final_answer', (event) => {
         try {
           const data = JSON.parse(event.data);
-          setStreamingAnswer(prev => {
-            if (!prev) return prev;
-            return {
-              ...prev,
-              content: data.answer,
-              citations: data.citations,
-              web_results: data.web_results || [], 
-              status: 'done'
-            };
-          });
+          const assistantMessage = {
+            ...(streamingAnswerRef.current || { role: 'assistant', steps: [] }),
+            content: data.answer,
+            citations: data.citations || [],
+            web_results: data.web_results || [], 
+            status: 'done'
+          };
+          streamingAnswerRef.current = assistantMessage;
+          setStreamingAnswer(assistantMessage);
 
           // Đóng eventSource ngay lập tức
           if (eventSource) {
@@ -113,28 +117,25 @@ function App() {
           }
 
           // Kích hoạt thủ tục kết thúc
-          finalizeMessage();
+          finalizeMessage(assistantMessage);
         } catch (e) {
           console.error("Error parsing final_answer event:", e);
         }
       });
 
       // Hàm phụ trợ để đưa tin nhắn streaming vào danh sách chính
-      const finalizeMessage = () => {
-        if (isProcessingRef.current) {
-          isProcessingRef.current = false; // Khóa ngay lập tức
-          
-          setStreamingAnswer(prev => {
-            if (prev && prev.content) {
-              // Thêm vào messages 
-              setMessages(msgPrev => [...msgPrev, { ...prev, role: 'assistant', status: 'done' }]);
-            }
-            return null; // Xóa box streaming ngay lập tức
-          });
-          
-          setIsStreaming(false);
-          setCurrentStatus(null);
+      const finalizeMessage = (assistantMessage) => {
+        if (!isProcessingRef.current) return;
+        isProcessingRef.current = false;
+
+        if (assistantMessage?.content) {
+          setMessages(prev => [...prev, { ...assistantMessage, role: 'assistant', status: 'done' }]);
         }
+
+        streamingAnswerRef.current = null;
+        setStreamingAnswer(null);
+        setIsStreaming(false);
+        setCurrentStatus(null);
       };
 
       eventSource.addEventListener('error', (event) => {
@@ -146,27 +147,27 @@ function App() {
             const data = JSON.parse(event.data);
             msg = data.message || msg;
           }
-        } catch (e) {}
+        } catch {
+          // Keep the default connection error message when SSE error payload is not JSON.
+        }
 
-        setStreamingAnswer(prev => {
-          if (!prev) return prev;
-          if (prev.content) {
-             return { ...prev, status: 'done' };
-          }
-          return { ...prev, content: "Lỗi: " + msg, status: 'error' };
-        });
-
+        const currentAnswer = streamingAnswerRef.current;
+        const assistantMessage = currentAnswer?.content
+          ? { ...currentAnswer, status: 'done' }
+          : { ...(currentAnswer || { role: 'assistant', steps: [] }), content: "Lỗi: " + msg, status: 'error' };
+        streamingAnswerRef.current = assistantMessage;
+        setStreamingAnswer(assistantMessage);
         if (eventSource) {
           const es = eventSource;
           eventSource = null;
           es.close();
         }
 
-        finalizeMessage();
+        finalizeMessage(assistantMessage);
       });
 
       eventSource.addEventListener('end', () => {
-        finalizeMessage();
+        finalizeMessage(streamingAnswerRef.current);
       });
 
     } catch (error) {
@@ -251,7 +252,7 @@ function App() {
               </div>
               <div className="bubble glass assistant streaming">
                 <div className="stepper-container">
-                  {STEPS.map((step, idx) => {
+                  {STEPS.map((step) => {
                     const isActive = currentStatus?.node === step.id;
                     const isCompleted = streamingAnswer.steps.includes(step.id) && !isActive;
                     return (
