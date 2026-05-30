@@ -10,52 +10,93 @@ import json
 import re
 from src.utils.llm_factory import get_model_with_fallback, parse_json_response
 from src.utils.logger import logger
+from src.graph.runtime_store import get_documents, get_web_results, put_citations
 from src.graph.state import GraphState
 
 
 GENERATOR_PROMPT = """
-Bạn là một luật sư pháp lý Việt Nam có kinh nghiệm. Nhiệm vụ của bạn là trả lời câu hỏi dựa trên tài liệu pháp luật.
+Bạn là trợ lý pháp lý Việt Nam. Trả lời câu hỏi chỉ dựa trên phần TÀI LIỆU THAM KHẢO bên dưới.
 
-QUAN TRỌNG:
-1. Trình bày câu trả lời bằng định dạng Markdown để dễ đọc:
-   - Sử dụng **danh sách có dấu chấm (bullet points)** hoặc **danh sách đánh số** cho các ý chính.
-   - Sử dụng **in đậm (bold)** cho tên luật, số hiệu văn bản hoặc các cụm từ quan trọng.
-   - Sử dụng **xuống dòng (line breaks)** hợp lý giữa các đoạn để không bị quá dày đặc.
-2. Trả lời dựa trên **TẤT CẢ** tài liệu tham khảo được cung cấp (bao gồm cả Tài liệu pháp lý và Kết quả tìm kiếm web).
-3. Nếu "Tài liệu pháp lý" không có thông tin, hãy sử dụng thông tin từ "Kết quả tìm kiếm web" để trả lời, nhưng cần lưu ý rõ: *"Dựa trên thông tin tìm kiếm được trên internet..."*
-4. BẮT BUỘC trích dẫn rõ ràng: "Theo Điều X, Khoản Y, [Tên Luật] năm N: ..." hoặc *"Theo thông tin từ nguồn [Tên trang web]: ..."*
-5. BẮT BUỘC: Trình bày CHI TIẾT các nội dung như mức lương, điều kiện, mốc thời gian... ngay trong trường "answer". KHÔNG ĐƯỢC chỉ trả lời chung chung rồi để người dùng tự xem citations.
-6. BẮT BUỘC: Bạn CHỈ ĐƯỢC PHÉP trả về DUY NHẤT một khối JSON hợp lệ. KHÔNG ĐƯỢC thêm bất kỳ văn bản giải thích, lời chào hay bình luận nào bên ngoài khối JSON.
+Quy tắc trả lời:
+- Trả lời trực tiếp, súc tích, bằng Markdown dễ đọc.
+- Chỉ nêu dữ kiện có trong tài liệu tham khảo; nếu thiếu căn cứ, nói rõ là chưa đủ dữ liệu.
+- Mỗi kết luận pháp lý quan trọng phải có source id như [S1], [S2] hoặc [Web 1].
+- Với văn bản luật, nêu tên văn bản, Điều/Khoản nếu có, trang nếu có.
+- Với bảng/phụ lục, nêu bảng/phụ lục, trang và giá trị liên quan nếu có.
+- Nếu chỉ dùng kết quả web, nói rõ đó là thông tin từ internet.
+- Trả về duy nhất một JSON hợp lệ, không thêm chữ ngoài JSON.
 
-    Văn phong: Trang trọng, chuyên nghiệp, súc tích.
-    YÊU CẦU QUAN TRỌNG: 
-    - CHỈ SỬ DỤNG thông tin có trong tài liệu tham khảo. KHÔNG đưa thêm kiến thức bên ngoài (ví dụ: số hiệu điều luật, ngày tháng cụ thể) nếu chúng không xuất hiện rõ ràng trong tài liệu, để tránh bị đánh dấu là ảo giác (hallucination).
-    - Tổng hợp thông tin từ nhiều nguồn để tránh lặp lại cùng một ý. 
-    - Trả lời trực tiếp, đi thẳng vào vấn đề, tránh diễn giải quá dài dòng.
-    - Nếu thông tin giữa Tài liệu pháp lý và Web giống nhau, hãy gộp lại và trích dẫn cả hai.
-    Confidence: Số thực từ 0.0 đến 1.0.
+Câu hỏi:
+{question}
 
-    Câu hỏi: {question}
+TÀI LIỆU THAM KHẢO:
+{context}
 
-    Tài liệu tham khảo:
-    {context}
+{feedback}
 
-    {feedback}
-
-    JSON Output Format:
+JSON schema:
+{{
+  "answer": "<câu trả lời Markdown có citation [S...] hoặc [Web ...]>",
+  "citations": [
     {{
-      "answer": "<câu_trả_lời_định_dạng_Markdown_kèm_trích_dẫn>",
-      "citations": [
-        {{
-          "text": "<đoạn_văn_trích_dẫn>",
-          "source": "<tên_văn_bản_hoặc_website>",
-          "position": <số_nguyên>,
-          "url": "<link_nếu_có>"
-        }}
-      ],
-      "confidence": <số_thực_0_đến_1>
+      "text": "<cụm hoặc câu trong answer có citation>",
+      "source": "<source id, ví dụ [S1]>",
+      "position": <số nguyên>,
+      "url": "<link nếu có>"
     }}
-    """
+  ],
+  "confidence": <số thực từ 0 đến 1>
+}}
+"""
+
+
+def _page_label(metadata: Dict[str, Any]) -> str:
+    page_start = metadata.get("page_start", "")
+    page_end = metadata.get("page_end", "")
+    if not page_start:
+        return ""
+    page_text = str(page_start)
+    if page_end and page_end != page_start:
+        page_text += f"-{page_end}"
+    return page_text
+
+
+def _source_label(source_id: str, metadata: Dict[str, Any]) -> str:
+    law_name = metadata.get("ten_van_ban", "") or metadata.get("doc_id", "")
+    law_number = metadata.get("so_hieu_van_ban", "")
+    dieu = metadata.get("dieu", "")
+    khoang = metadata.get("khoang", "")
+    level = metadata.get("level", "")
+    table_id = metadata.get("table_id", "")
+    page_text = _page_label(metadata)
+
+    parts = [f"[{source_id}]", law_name]
+    if law_number:
+        parts.append(f"số {law_number}")
+    if level == "table":
+        parts.append(f"bảng {table_id}" if table_id else "bảng/phụ lục")
+    else:
+        if dieu:
+            parts.append(dieu)
+        if khoang:
+            parts.append(khoang)
+    if page_text:
+        parts.append(f"trang {page_text}")
+    return ", ".join(part for part in parts if part)
+
+
+def _source_map_from_documents(documents: List[Dict]) -> Dict[str, Dict[str, Any]]:
+    source_map: Dict[str, Dict[str, Any]] = {}
+    for i, doc in enumerate(documents or [], 1):
+        metadata = doc.get("metadata", {})
+        source_id = f"S{i}"
+        source_map[source_id] = {
+            "source_id": source_id,
+            "label": _source_label(source_id, metadata),
+            "url": metadata.get("source_url", ""),
+            "metadata": metadata,
+        }
+    return source_map
 
 
 def _format_documents_and_web(
@@ -80,10 +121,18 @@ def _format_documents_and_web(
         for i, doc in enumerate(documents, 1):
             content = doc.get("content", "")
             metadata = doc.get("metadata", {})
+            source_id = f"S{i}"
             
             law_name = metadata.get("ten_van_ban", "")
             dieu = metadata.get("dieu", "")
             khoang = metadata.get("khoang", "")
+            chunk_id = metadata.get("chunk_id", "")
+            status = metadata.get("trang_thai", "")
+            source_url = metadata.get("source_url", "")
+            page_start = metadata.get("page_start", "")
+            page_end = metadata.get("page_end", "")
+            level = metadata.get("level", "")
+            table_id = metadata.get("table_id", "")
             
             source_info = law_name
             if dieu:
@@ -91,7 +140,23 @@ def _format_documents_and_web(
             if khoang:
                 source_info += f" {khoang}"
             
-            context_parts.append(f"\n[Tài liệu {i}] {source_info}")
+            context_parts.append(f"\n[{source_id}] {source_info}")
+            context_parts.append(f"Citation source: {_source_label(source_id, metadata)}")
+            if chunk_id:
+                context_parts.append(f"Chunk ID: {chunk_id}")
+            if level:
+                context_parts.append(f"Cấp: {level}")
+            if table_id:
+                context_parts.append(f"Table ID: {table_id}")
+            if status:
+                context_parts.append(f"Trạng thái: {status}")
+            if page_start:
+                page_text = str(page_start)
+                if page_end and page_end != page_start:
+                    page_text += f"-{page_end}"
+                context_parts.append(f"Trang: {page_text}")
+            if source_url:
+                context_parts.append(f"URL nguồn: {source_url}")
             context_parts.append(content)
             context_parts.append("-" * 50)
     
@@ -112,6 +177,57 @@ def _format_documents_and_web(
 
     
     return "\n".join(context_parts)
+
+
+def _extract_source_id(text: str) -> str:
+    match = re.search(r"\[(S\d+|Web\s+\d+)\]", text or "", flags=re.IGNORECASE)
+    return match.group(1).replace(" ", " ") if match else ""
+
+
+def _normalize_citations(
+    citations: Any,
+    answer: str,
+    documents: List[Dict],
+) -> List[Dict]:
+    source_map = _source_map_from_documents(documents)
+    normalized: List[Dict] = []
+
+    if isinstance(citations, list):
+        for index, citation in enumerate(citations):
+            if not isinstance(citation, dict):
+                continue
+            text = str(citation.get("text") or citation.get("source") or "").strip()
+            source = str(citation.get("source") or "").strip()
+            source_id = _extract_source_id(text) or _extract_source_id(source)
+            source_info = source_map.get(source_id)
+            fallback_text = f"Nguồn {source_id}" if source_id else "Nguồn tham khảo"
+            normalized.append({
+                "text": text or source or fallback_text,
+                "source": source_info["label"] if source_info else source,
+                "position": int(citation.get("position", index) or index),
+                "url": source_info["url"] if source_info else str(citation.get("url") or ""),
+                "source_id": source_id,
+                "metadata": source_info["metadata"] if source_info else {},
+            })
+
+    existing_source_ids = {item.get("source_id") for item in normalized if item.get("source_id")}
+    for source_id, source_info in source_map.items():
+        if source_id in existing_source_ids:
+            continue
+        if re.search(rf"\[{re.escape(source_id)}\]", answer or "", flags=re.IGNORECASE):
+            normalized.append({
+                "text": f"Citation {source_id}",
+                "source": source_info["label"],
+                "position": len(normalized),
+                "url": source_info["url"],
+                "source_id": source_id,
+                "metadata": source_info["metadata"],
+            })
+
+    if not normalized:
+        normalized = _extract_citations(answer, documents)
+
+    return normalized
 
 
 def _extract_citations(answer: str, documents: List[Dict]) -> List[Dict]:
@@ -180,8 +296,9 @@ def generator_node(state: GraphState) -> Dict[str, Any]:
     """
     try:
         question = state.get("question", "")
-        documents = state.get("documents", [])
-        web_results = state.get("web_results", [])
+        trace_id = state.get("trace_id") or state.get("request_id") or ""
+        documents = get_documents(state)
+        web_results = get_web_results(state)
         
         if not question:
             logger.error("No question provided to generator")
@@ -276,13 +393,12 @@ def generator_node(state: GraphState) -> Dict[str, Any]:
         
         # Try to use citations from LLM, fallback to extraction
         try:
-            citations = result.get("citations")
-            if not isinstance(citations, list) or not citations:
-                citations = _extract_citations(answer, documents)
+            citations = _normalize_citations(result.get("citations"), answer, documents)
         except Exception as e:
             logger.warning(f"Error extracting citations: {e}")
             citations = _extract_citations(answer, documents)
         
+        citation_ids = put_citations(trace_id, citations)
         logger.info(f"Generated answer with {len(citations)} citations")
         logger.debug(f"Confidence: {confidence}")
         
@@ -291,7 +407,7 @@ def generator_node(state: GraphState) -> Dict[str, Any]:
         
         return {
             "answer": answer,
-            "citations": citations,
+            "citation_ids": citation_ids,
             "confidence": confidence,
             "generation_attempt": current_attempt + 1,
             "error": None,

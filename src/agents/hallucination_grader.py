@@ -6,9 +6,11 @@ thông tin sai, không có trong tài liệu, hoặc trích dẫn không chính 
 Loop back đến generator nếu phát hiện lỗi (max 3 lần).
 """
 
+import re
 from typing import Dict, Any, List
 from src.utils.llm_factory import get_model_with_fallback, parse_json_response
 from src.utils.logger import logger
+from src.graph.runtime_store import get_citations, get_documents, get_web_results
 from src.graph.state import GraphState
 
 
@@ -57,8 +59,21 @@ def _format_all_context_for_grader(documents: List[Dict], web_results: List[Dict
         context_parts.append("--- TÀI LIỆU PHÁP LÝ ĐỊA PHƯƠNG ---")
         for i, doc in enumerate(documents, 1):
             content = doc.get("content", "")
-            source = doc.get("source", "Unknown")
-            context_parts.append(f"[{i}] Nguồn: {source}\nNội dung: {content}\n")
+            metadata = doc.get("metadata", {})
+            source = metadata.get("ten_van_ban") or metadata.get("doc_id") or doc.get("source", "Unknown")
+            page_start = metadata.get("page_start", "")
+            page_end = metadata.get("page_end", "")
+            page_label = str(page_start) if page_start else ""
+            if page_label and page_end and page_end != page_start:
+                page_label += f"-{page_end}"
+            citation_id = f"S{i}"
+            context_parts.append(
+                f"[{citation_id}] Nguồn: {source}\n"
+                f"Điều/Khoản: {metadata.get('dieu', '')} {metadata.get('khoang', '')}\n"
+                f"Trang: {page_label}\n"
+                f"URL: {metadata.get('source_url', '')}\n"
+                f"Nội dung: {content}\n"
+            )
             
     # Format web results
     if web_results:
@@ -72,14 +87,83 @@ def _format_all_context_for_grader(documents: List[Dict], web_results: List[Dict
     return "\n".join(context_parts)
 
 
+def _extract_source_ids(text: str) -> set[str]:
+    return {
+        match.group(1).replace(" ", "")
+        for match in re.finditer(r"\[(S\d+|Web\s+\d+)\]", text or "", flags=re.IGNORECASE)
+    }
+
+
+def _valid_source_ids(documents: List[Dict], web_results: List[Dict] = None) -> set[str]:
+    valid = {f"S{i}" for i, _ in enumerate(documents or [], 1)}
+    valid.update({f"Web{i}" for i, _ in enumerate(web_results or [], 1)})
+    return valid
+
+
+def _numeric_facts(text: str) -> set[str]:
+    normalized = (text or "").replace(",", ".")
+    return {
+        match.group(0).strip(".")
+        for match in re.finditer(r"\b\d+(?:\.\d+)?%?\b", normalized)
+    }
+
+
+def _rule_based_hallucination_check(
+    answer: str,
+    documents: List[Dict],
+    web_results: List[Dict] = None,
+    citations: List[Dict] = None,
+) -> str:
+    """Return a failure reason for deterministic citation/fact issues."""
+    valid_ids = _valid_source_ids(documents, web_results)
+    cited_ids = _extract_source_ids(answer)
+
+    for citation in citations or []:
+        if isinstance(citation, dict):
+            cited_ids.update(_extract_source_ids(str(citation.get("source", ""))))
+            cited_ids.update(_extract_source_ids(str(citation.get("text", ""))))
+
+    invalid_ids = cited_ids - valid_ids
+    if invalid_ids:
+        return f"Câu trả lời trích dẫn source id không tồn tại: {sorted(invalid_ids)}"
+
+    if documents and not cited_ids:
+        return "Câu trả lời không có citation source id [S...] từ tài liệu đã truy xuất."
+
+    context_text = "\n".join(
+        doc.get("content", "") + "\n" + " ".join(str(value) for value in doc.get("metadata", {}).values())
+        for doc in documents or []
+    )
+    context_text += "\n" + "\n".join(res.get("content", "") for res in web_results or [])
+    answer_numbers = _numeric_facts(answer)
+    context_numbers = _numeric_facts(context_text)
+    allowed_numbers = {re.sub(r"\D", "", source_id) for source_id in cited_ids}
+    unsupported_numbers = answer_numbers - context_numbers - allowed_numbers
+    if unsupported_numbers:
+        return f"Câu trả lời có số liệu không xuất hiện trong context: {sorted(unsupported_numbers)}"
+
+    missing_url_citations = [
+        citation
+        for citation in citations or []
+        if isinstance(citation, dict)
+        and _extract_source_ids(str(citation.get("source", "")) + str(citation.get("text", "")))
+        and not citation.get("url")
+    ]
+    if missing_url_citations:
+        return "Citation có source id nhưng thiếu URL nguồn."
+
+    return ""
+
+
 async def hallucination_grader_node(state: GraphState) -> Dict[str, Any]:
     """
     Node kiểm tra ảo giác trong câu trả lời.
     """
     question = state.get("question")
     answer = state.get("answer")
-    documents = state.get("documents", [])
-    web_results = state.get("web_results", [])
+    documents = get_documents(state)
+    web_results = get_web_results(state)
+    citations = get_citations(state)
     attempt = state.get("hallucination_retry_count", 0) + 1
     
     logger.info(f"Checking hallucinations in answer (attempt {attempt})...")
@@ -88,6 +172,15 @@ async def hallucination_grader_node(state: GraphState) -> Dict[str, Any]:
         return {
             "hallucination_verdict": "fail",
             "hallucinations": "Câu trả lời rỗng, cần sinh lại.",
+            "hallucination_retry_count": attempt
+        }
+
+    rule_failure = _rule_based_hallucination_check(answer, documents, web_results, citations)
+    if rule_failure:
+        logger.warning(f"Rule-based hallucination check failed: {rule_failure}")
+        return {
+            "hallucination_verdict": "fail",
+            "hallucinations": rule_failure,
             "hallucination_retry_count": attempt
         }
 
