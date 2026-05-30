@@ -1,50 +1,53 @@
 """
 src/utils/llm_factory.py
-Khởi tạo LLM instance dựa theo config.
-Hỗ trợ: Gemini.
-
-Public API:
-    get_llm()             → BaseChatModel (singleton, cached)
-    parse_json_response() → dict  (parse JSON an toàn từ LLM output)
+Gemini LLM factory with key-rotation observability.
 """
-import re
+from __future__ import annotations
+
+import hashlib
+import inspect
 import json
+import re
 from functools import lru_cache
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.runnables import RunnableWithFallbacks
 
 from src.config import (
-    LLM_MODEL, LLM_TEMPERATURE,
-    GEMINI_API_KEY, GEMINI_API_KEYS,
-    LLM_MAX_RETRIES, LLM_REQUEST_TIMEOUT,
-    FALLBACK_MODEL
+    GEMINI_API_KEY,
+    GEMINI_API_KEYS,
+    LLM_MAX_RETRIES,
+    LLM_MODEL,
+    LLM_REQUEST_TIMEOUT,
+    LLM_TEMPERATURE,
 )
 from src.utils.logger import logger
 
 
 @lru_cache(maxsize=20)
 def get_llm(
-    model_name: Optional[str] = None, 
+    model_name: Optional[str] = None,
     max_retries: Optional[int] = None,
     api_key: Optional[str] = None,
-    json_mode: bool = False
+    json_mode: bool = False,
 ) -> BaseChatModel:
-    """
-    Trả về Gemini LLM instance (cached theo model_name, retries, và api_key).
-    """
+    """Return a cached Gemini chat model instance."""
     target_model = model_name or LLM_MODEL
     retries = max_retries if max_retries is not None else LLM_MAX_RETRIES
-    
-    # Chỉ hỗ trợ Gemini
+
     from langchain_google_genai import ChatGoogleGenerativeAI
+
     actual_key = api_key or GEMINI_API_KEY
     if not actual_key:
-        raise ValueError("Chưa cấu hình GEMINI_API_KEY")
-        
-    logger.debug(f"[LLM] Khởi tạo Gemini: {target_model} (retries={retries}, json_mode={json_mode})")
-    
+        raise ValueError("GEMINI_API_KEY is not configured")
+
+    logger.debug(
+        "[LLM] init Gemini model={} retries={} json_mode={}",
+        target_model,
+        retries,
+        json_mode,
+    )
+
     kwargs = {
         "model": target_model,
         "google_api_key": actual_key,
@@ -54,64 +57,153 @@ def get_llm(
         "max_output_tokens": 4096,
         "convert_system_message_to_human": True,
     }
-    
     if json_mode:
-        # LangChain Google GenAI mới nhất ưu tiên tham số top-level
         kwargs["response_mime_type"] = "application/json"
-        
+
     return ChatGoogleGenerativeAI(**kwargs)
 
 
+def _key_order_for_purpose(purpose: str, total_keys: int) -> list[int]:
+    """Return a stable key-index order for an agent purpose."""
+    if total_keys <= 0:
+        return []
+    if purpose != "default" and total_keys > 1:
+        offset = int(hashlib.md5(purpose.encode()).hexdigest(), 16) % total_keys
+        return list(range(offset, total_keys)) + list(range(0, offset))
+    return list(range(total_keys))
 
-def get_model_with_fallback(primary_model: Optional[str] = None, purpose: str = "default", json_mode: bool = False) -> Any:
+
+def _error_kind(error: Exception) -> str:
+    message = str(error).lower()
+    if "429" in message or "quota" in message or "rate limit" in message or "ratelimit" in message:
+        return "quota/rate_limit"
+    if "timeout" in message or "deadline" in message:
+        return "timeout"
+    if "503" in message or "502" in message or "500" in message or "unavailable" in message:
+        return "server_error"
+    return type(error).__name__
+
+
+class ObservedFallbackChain:
     """
-    Tạo một runnable Gemini có khả năng tự động xoay vòng Key (Key Rotation).
+    Lightweight fallback runnable that logs which safe key index is used.
+
+    Raw API keys are never logged. Agents only rely on invoke/ainvoke, so this
+    wrapper keeps the call surface small and explicit.
+    """
+
+    def __init__(
+        self,
+        *,
+        purpose: str,
+        model_name: str,
+        json_mode: bool,
+        candidates: list[tuple[int, Any]],
+    ) -> None:
+        self.purpose = purpose
+        self.model_name = model_name
+        self.json_mode = json_mode
+        self.candidates = candidates
+        self.key_order_indices = [key_index for key_index, _ in candidates]
+
+        primary_key_index = self.key_order_indices[0] if self.key_order_indices else None
+        fallback_key_indices = self.key_order_indices[1:]
+        logger.info(
+            "[LLM] agent={} model={} primary_key_index={} fallback_key_indices={} json_mode={}",
+            purpose,
+            model_name,
+            primary_key_index,
+            fallback_key_indices,
+            json_mode,
+        )
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
+        last_error: Exception | None = None
+        for key_index, runnable in self.candidates:
+            try:
+                result = runnable.invoke(*args, **kwargs)
+                logger.info("[LLM] agent={} key_index={} succeeded", self.purpose, key_index)
+                return result
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[LLM] agent={} key_index={} failed reason={}",
+                    self.purpose,
+                    key_index,
+                    _error_kind(exc),
+                )
+
+        if last_error is not None:
+            logger.error("[LLM] agent={} all_keys_failed", self.purpose)
+            raise last_error
+        raise ValueError("No LLM candidates configured")
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+        last_error: Exception | None = None
+        for key_index, runnable in self.candidates:
+            try:
+                if hasattr(runnable, "ainvoke"):
+                    result = runnable.ainvoke(*args, **kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                else:
+                    result = runnable.invoke(*args, **kwargs)
+                logger.info("[LLM] agent={} key_index={} succeeded", self.purpose, key_index)
+                return result
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[LLM] agent={} key_index={} failed reason={}",
+                    self.purpose,
+                    key_index,
+                    _error_kind(exc),
+                )
+
+        if last_error is not None:
+            logger.error("[LLM] agent={} all_keys_failed", self.purpose)
+            raise last_error
+        raise ValueError("No LLM candidates configured")
+
+
+def get_model_with_fallback(
+    primary_model: Optional[str] = None,
+    purpose: str = "default",
+    json_mode: bool = False,
+) -> ObservedFallbackChain:
+    """
+    Create a Gemini runnable with deterministic key distribution and fallback.
+
+    The primary key is chosen by hashing the agent purpose. If that key fails
+    because of quota/rate limits or other transient errors, the wrapper tries
+    the remaining configured keys in order and logs only their indices.
     """
     target_primary = primary_model or LLM_MODEL
-    
-    if not GEMINI_API_KEYS:
-        raise ValueError("Không tìm thấy GEMINI_API_KEY nào trong .env")
-    
-    # 1. Chuẩn bị danh sách keys
-    keys = list(GEMINI_API_KEYS)
-    
-    # 2. Logic xoay vòng index dựa trên mục đích (Phân phối tải)
-    if purpose != "default" and len(keys) > 1:
-        import hashlib
-        # Hash tên agent để lấy offset ổn định
-        offset = int(hashlib.md5(purpose.encode()).hexdigest(), 16) % len(keys)
-        # Đảo thứ tự keys: đưa key tại index 'offset' lên đầu
-        keys = keys[offset:] + keys[:offset]
-        logger.info(f"[LLM] Khởi tạo '{purpose}' sử dụng Project Key #{offset} làm primary (json_mode={json_mode})")
-    
-    # 3. Tạo danh sách các LLM instances với các keys đã sắp xếp
-    gemini_models = []
-    for i, key in enumerate(keys):
-        # Key đầu tiên dùng retries=1 để failover sang key khác nhanh hơn nếu bị 429
-        retries = 1 if i == 0 else 2
-        gemini_models.append(get_llm(target_primary, max_retries=retries, api_key=key, json_mode=json_mode))
 
-    
-    main_llm = gemini_models[0]
-    fallback_list = gemini_models[1:]
-    
-    # 4. Nếu còn GEMINI_API_KEYS khác, thiết lập fallback chaining
-    if fallback_list:
-        # 503 Service Unavailable, 429 Rate Limit, 500 Internal Error, 502 Bad Gateway
-        # Có thể thêm các lỗi cụ thể từ Google API nếu LangChain không bắt hết
-        return main_llm.with_fallbacks(fallback_list)
-    
-    return main_llm
+    if not GEMINI_API_KEYS:
+        raise ValueError("No GEMINI_API_KEY values found in .env")
+
+    key_order = _key_order_for_purpose(purpose, len(GEMINI_API_KEYS))
+    candidates: list[tuple[int, Any]] = []
+
+    for position, key_index in enumerate(key_order):
+        key = GEMINI_API_KEYS[key_index]
+        retries = 1 if position == 0 else 2
+        llm = get_llm(target_primary, max_retries=retries, api_key=key, json_mode=json_mode)
+        candidates.append((key_index, llm))
+
+    return ObservedFallbackChain(
+        purpose=purpose,
+        model_name=target_primary,
+        json_mode=json_mode,
+        candidates=candidates,
+    )
 
 
 def parse_json_response(text: str) -> dict[str, Any]:
-    """
-    Parse JSON từ LLM response một cách an toàn, hỗ trợ sửa lỗi JSON bị cắt cụt.
-    """
+    """Parse JSON safely from an LLM response."""
     if not text or not text.strip():
-        raise ValueError("LLM trả về chuỗi rỗng")
+        raise ValueError("LLM returned an empty response")
 
-    # Bước 1: Tiền xử lý - Loại bỏ markdown code fence
     cleaned = re.sub(r"```(?:json)?\s*", "", text).strip()
     cleaned = cleaned.rstrip("`").strip()
 
@@ -119,31 +211,25 @@ def parse_json_response(text: str) -> dict[str, Any]:
         try:
             return json.loads(json_str)
         except json.JSONDecodeError:
-            # Thử sửa lỗi JSON bị cắt cụt bằng cách đóng dần các ngoặc
             for suffix in ["\"}", "}", "\"]}", "]}", "\"]}]}", "}]}", "\"]", "]", "\""]:
                 try:
                     return json.loads(json_str + suffix)
-                except:
+                except Exception:
                     continue
             return None
 
-    # Bước 2: Thử parse toàn bộ chuỗi đã làm sạch
     result = try_parse(cleaned)
     if result and isinstance(result, dict) and "answer" in result:
         return result
 
-    # Bước 3: Tìm tất cả các block {} khả thi
-    # Dùng regex tìm tất cả các block từ dấu { đến dấu } cuối cùng có thể
     matches = re.findall(r"(\{[\s\S]*\})", text)
     if not matches:
-        # Thử tìm block bị hở ở cuối (cắt cụt)
         matches = re.findall(r"(\{[\s\S]*)", text)
 
     potential_results = []
     for match in matches:
         parsed = try_parse(match)
         if parsed and isinstance(parsed, dict):
-            # Ưu tiên block có chứa 'answer'
             if "answer" in parsed:
                 return parsed
             potential_results.append(parsed)
@@ -152,7 +238,7 @@ def parse_json_response(text: str) -> dict[str, Any]:
         return potential_results[0]
 
     raise ValueError(
-        f"Không thể parse JSON từ LLM response.\n"
-        f"Preview (300 ký tự đầu): {text[:300]}"
+        "Could not parse JSON from LLM response.\n"
+        f"Preview (first 300 chars): {text[:300]}"
     )
 
