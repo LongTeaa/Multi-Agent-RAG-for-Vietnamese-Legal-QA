@@ -17,7 +17,7 @@ from typing import List
 
 from sentence_transformers import SentenceTransformer
 
-from src.config import EMBEDDING_MODEL, EMBEDDING_DEVICE, VECTOR_SIZE
+from src.config import EMBEDDING_MODEL, EMBEDDING_DEVICE, QDRANT_BM25_MODEL, SPARSE_RETRIEVAL_MODE, VECTOR_SIZE
 from src.utils.logger import logger
 
 # Models cần prefix theo chuẩn e5-instruct
@@ -225,11 +225,60 @@ def generate_sparse_vector(text: str) -> dict:
         values.append(float(count / total))
 
     # Qdrant yêu cầu indices phải được sắp xếp tăng dần trong 1 số phiên bản
-    combined = sorted(zip(indices, values))
+    merged: dict[int, float] = {}
+    for idx, value in zip(indices, values):
+        merged[idx] = merged.get(idx, 0.0) + value
+
+    combined = sorted(merged.items())
     indices = [c[0] for c in combined]
     values = [c[1] for c in combined]
 
     return {"indices": indices, "values": values}
+
+
+def sparse_vector_config_modifier():
+    """Return Qdrant sparse modifier for the configured sparse retrieval mode."""
+    if SPARSE_RETRIEVAL_MODE == "qdrant_bm25":
+        from qdrant_client import models
+
+        return models.Modifier.IDF
+    return None
+
+
+def make_sparse_vector_input(text: str):
+    """
+    Build the sparse vector payload/query object for Qdrant.
+
+    Modes:
+    - hashing: existing local hashing + term-frequency sparse vector.
+    - qdrant_bm25: Qdrant BM25 document inference object. Requires re-indexing
+      the collection with sparse vector modifier=IDF.
+    """
+    if SPARSE_RETRIEVAL_MODE == "qdrant_bm25":
+        from qdrant_client import models
+
+        return models.Document(text=text or "", model=QDRANT_BM25_MODEL)
+
+    sparse_vec = generate_sparse_vector(text)
+    from qdrant_client import models
+
+    return models.SparseVector(indices=sparse_vec["indices"], values=sparse_vec["values"])
+
+
+def make_sparse_vector_payload(text: str):
+    """Build a sparse vector value suitable for PointStruct vector payload."""
+    if SPARSE_RETRIEVAL_MODE == "qdrant_bm25":
+        from qdrant_client import models
+
+        return models.Document(text=text or "", model=QDRANT_BM25_MODEL)
+    return generate_sparse_vector(text)
+
+
+def make_sparse_vector_payload_json(text: str) -> dict:
+    """JSON-compatible sparse vector payload for the requests-based Qdrant client."""
+    if SPARSE_RETRIEVAL_MODE == "qdrant_bm25":
+        return {"text": text or "", "model": QDRANT_BM25_MODEL}
+    return generate_sparse_vector(text)
 
 
 def get_vector_size() -> int:

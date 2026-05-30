@@ -30,7 +30,7 @@ from src.config import (
     VECTOR_SIZE,
 )
 from src.utils.logger import logger
-from src.utils.embedding import embed_texts, embed_query, tokenize_for_bm25, generate_sparse_vector
+from src.utils.embedding import embed_texts, make_sparse_vector_payload, sparse_vector_config_modifier
 
 
 @dataclass
@@ -171,7 +171,8 @@ def create_collection(
             },
             sparse_vectors_config={
                 "bm25": SparseVectorParams(
-                    index=SparseIndexParams(on_disk=True)  # Bật on_disk để tối ưu hiệu năng
+                    index=SparseIndexParams(on_disk=True),  # Bật on_disk để tối ưu hiệu năng
+                    modifier=sparse_vector_config_modifier(),
                 )
             },
         )
@@ -183,6 +184,17 @@ def create_collection(
             "loai_van_ban": "keyword",
             "so_hieu_van_ban": "keyword",
             "co_quan_ban_hanh": "keyword",
+            "doc_id": "keyword",
+            "source_url": "keyword",
+            "page_start": "integer",
+            "page_end": "integer",
+            "level": "keyword",
+            "parent_id": "keyword",
+            "parent_article_id": "keyword",
+            "article_number": "integer",
+            "clause_number": "integer",
+            "point_label": "keyword",
+            "table_id": "keyword",
         }
 
         for field_name, field_type in payload_fields.items():
@@ -247,8 +259,7 @@ def upsert_chunks(
         }
         payload["chunk_text"] = chunk["content"]  # Store content với tên payload
 
-        # Tạo sparse vector thật sự (hashing + TF)
-        sparse_vec = generate_sparse_vector(chunk["content"])
+        sparse_vec = make_sparse_vector_payload(chunk["content"])
 
         point = PointStruct(
             id=point_id,

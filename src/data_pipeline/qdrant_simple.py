@@ -4,13 +4,14 @@ Lightweight Qdrant wrapper using `requests` library to bypass httpx encoding iss
 This is a fallback when regular qdrant-client fails due to encoding problems.
 """
 import json
+import time
 import uuid
 from typing import List, Optional, Dict, Any
 
 import requests
 from loguru import logger
 
-from src.config import QDRANT_HOST, QDRANT_PORT, VECTOR_SIZE, COLLECTION_NAME
+from src.config import QDRANT_HOST, QDRANT_PORT, SPARSE_RETRIEVAL_MODE, VECTOR_SIZE, COLLECTION_NAME
 
 
 class QdrantSimpleClient:
@@ -28,6 +29,7 @@ class QdrantSimpleClient:
             resp = self.session.get(url)
             if resp.status_code == 200:
                 logger.info(f"[QDRANT_SIMPLE] Collection '{collection_name}' already exists")
+                self.create_payload_indexes(collection_name)
                 return True
 
             # Create collection - PUT to /collections/{collection_name}
@@ -47,18 +49,65 @@ class QdrantSimpleClient:
                     "bm25": {  # Named sparse vector "bm25"
                         "index": {
                             "on_disk": True
-                        }
+                        },
+                        **({"modifier": "idf"} if SPARSE_RETRIEVAL_MODE == "qdrant_bm25" else {}),
                     }
                 }
             }
-            resp = self.session.put(create_url, json=payload)
-            resp.raise_for_status()
+            last_error = None
+            for attempt in range(1, 4):
+                try:
+                    resp = self.session.put(create_url, json=payload, timeout=30)
+                    resp.raise_for_status()
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"[QDRANT_SIMPLE] Create collection attempt {attempt}/3 failed: {e}")
+                    time.sleep(1.5 * attempt)
+            if last_error:
+                raise last_error
             logger.info(f"[QDRANT_SIMPLE] Created collection '{collection_name}'")
+            self.create_payload_indexes(collection_name)
             return True
 
         except Exception as e:
             logger.error(f"[QDRANT_SIMPLE] Failed to create collection: {e}")
             return False
+
+    def create_payload_indexes(self, collection_name: str) -> None:
+        """Create payload indexes used by filters and citations."""
+        payload_fields = {
+            "trang_thai": "keyword",
+            "nam_ban_hanh": "integer",
+            "loai_van_ban": "keyword",
+            "so_hieu_van_ban": "keyword",
+            "co_quan_ban_hanh": "keyword",
+            "doc_id": "keyword",
+            "source_url": "keyword",
+            "page_start": "integer",
+            "page_end": "integer",
+            "level": "keyword",
+            "parent_id": "keyword",
+            "parent_article_id": "keyword",
+            "article_number": "integer",
+            "clause_number": "integer",
+            "point_label": "keyword",
+            "table_id": "keyword",
+        }
+        for field_name, field_schema in payload_fields.items():
+            try:
+                url = f"{self.base_url}/collections/{collection_name}/index"
+                resp = self.session.put(
+                    url,
+                    json={"field_name": field_name, "field_schema": field_schema},
+                    params={"wait": "true"},
+                )
+                if resp.status_code >= 400:
+                    logger.debug(f"[QDRANT_SIMPLE] Payload index response for {field_name}: {resp.text[:300]}")
+                resp.raise_for_status()
+            except Exception as e:
+                logger.debug(f"[QDRANT_SIMPLE] Payload index may already exist for {field_name}: {e}")
 
     def upsert_points(
         self, collection_name: str, points: List[Dict], wait: bool = True
@@ -82,6 +131,8 @@ class QdrantSimpleClient:
             }
 
             resp = self.session.put(url, json=payload)
+            if resp.status_code >= 400:
+                logger.error(f"[QDRANT_SIMPLE] Upsert response: {resp.text[:1000]}")
             resp.raise_for_status()
 
             logger.info(f"[QDRANT_SIMPLE] Upserted {len(qdrant_points)} points")
@@ -109,6 +160,7 @@ class QdrantSimpleClient:
             resp = self.session.delete(url)
             resp.raise_for_status()
             logger.info(f"[QDRANT_SIMPLE] Deleted collection '{collection_name}'")
+            time.sleep(1.0)
             return True
         except Exception as e:
             logger.error(f"[QDRANT_SIMPLE] Failed to delete collection: {e}")
@@ -136,7 +188,7 @@ def upsert_chunks_simple(
         Number of upserted points
     """
     client = QdrantSimpleClient(host, port)
-    from src.utils.embedding import generate_sparse_vector
+    from src.utils.embedding import make_sparse_vector_payload_json
 
     # Delete if recreate
     if recreate:
@@ -161,8 +213,7 @@ def upsert_chunks_simple(
         }
         payload["chunk_text"] = chunk.get("content", "")
 
-        # Generate sparse vector
-        sparse_vec = generate_sparse_vector(chunk.get("content", ""))
+        sparse_vec = make_sparse_vector_payload_json(chunk.get("content", ""))
 
         points.append({
             "id": point_id,
