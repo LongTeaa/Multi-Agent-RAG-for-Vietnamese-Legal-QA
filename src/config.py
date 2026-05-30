@@ -70,6 +70,16 @@ QDRANT_API_KEY: str | None = (os.getenv("QDRANT_API_KEY") or "").strip() or None
 COLLECTION_NAME: str = os.getenv("COLLECTION_NAME", "vietnamese_legal_chunks")
 
 # ============================
+# OCR / PDF ingestion
+# ============================
+OCR_ENABLED: bool = os.getenv("OCR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+OCR_ENGINE: str = os.getenv("OCR_ENGINE", "tesseract")
+TESSERACT_CMD: str = os.getenv("TESSERACT_CMD", "")
+TESSERACT_LANG: str = os.getenv("TESSERACT_LANG", "vie")
+OCR_DPI: int = int(os.getenv("OCR_DPI", "300"))
+OCR_MIN_TEXT_CHARS: int = int(os.getenv("OCR_MIN_TEXT_CHARS", "50"))
+
+# ============================
 # Web Search
 # ============================
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
@@ -79,6 +89,15 @@ TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 # ============================
 MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
 TOP_K_DOCUMENTS: int = int(os.getenv("TOP_K_DOCUMENTS", "5"))
+RETRIEVAL_PREFETCH_MULTIPLIER: int = int(os.getenv("RETRIEVAL_PREFETCH_MULTIPLIER", "4"))
+RETRIEVAL_EXPAND_CONTEXT: bool = os.getenv("RETRIEVAL_EXPAND_CONTEXT", "true").strip().lower() in {"1", "true", "yes", "on"}
+RETRIEVAL_DEFAULT_STATUS: str = os.getenv("RETRIEVAL_DEFAULT_STATUS", "Hiện hành")
+RERANK_ENABLED: bool = os.getenv("RERANK_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+RERANK_MODEL: str = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+RERANK_TOP_N: int = int(os.getenv("RERANK_TOP_N", "20"))
+RERANK_FINAL_K: int = int(os.getenv("RERANK_FINAL_K", str(TOP_K_DOCUMENTS)))
+SPARSE_RETRIEVAL_MODE: str = os.getenv("SPARSE_RETRIEVAL_MODE", "hashing").strip().lower()
+QDRANT_BM25_MODEL: str = os.getenv("QDRANT_BM25_MODEL", "qdrant/bm25")
 
 # ============================
 # App Config
