@@ -46,63 +46,7 @@ python scripts/test_key_rotation_observability.py
 
 Hệ thống được thiết kế dưới dạng một State Machine phức tạp, điều phối bởi LangGraph:
 
-```mermaid
-graph LR
-    A["👤 USER INPUT<br/>Thời gian làm việc tối đa?"]
-    
-    B["🎯 Router Agent<br/>Intent Classification"]
-    C{Intent<br/>Check?}
-    E["❌ Early Exit<br/>No RAG"]
-    D["📚 Retriever<br/>Hybrid Search<br/>BM25 + Vector"]
-    
-    F["📋 Grader<br/>CRAG<br/>Relevance Check"]
-    G{Relevant<br/>Docs?}
-    H["🌐 Web Search<br/>Tavily API"]
-    
-    I["✍️ Generator<br/>Answer Synthesis<br/>+ Citations"]
-    
-    J["🔍 Hallucination Grader<br/>Self-Reflection"]
-    K{Answer<br/>Quality OK?}
-    L["🔄 Regenerate<br/>Max 3x"]
-    
-    M["✅ FINAL OUTPUT<br/>Answer + Citations<br/>Confidence"]
-    N["📤 Response to User"]
-    
-    A --> B
-    B --> C
-    C -->|legal_query| D
-    C -->|out_of_scope| E
-    E --> N
-    
-    D --> F
-    F --> G
-    G -->|No| H
-    G -->|Yes| I
-    H --> I
-    
-    I --> J
-    J --> K
-    K -->|Fail| L
-    L --> J
-    K -->|Pass| M
-    
-    M --> N
-    
-    style A fill:#e3f2fd,stroke:#1976d2,stroke-width:3px
-    style B fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    style C fill:#fff8e1,stroke:#f9a825,stroke-width:2px
-    style D fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style E fill:#ffebee,stroke:#c62828,stroke-width:2px
-    style F fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style G fill:#fff8e1,stroke:#f9a825,stroke-width:2px
-    style H fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
-    style I fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-    style J fill:#e0f2f1,stroke:#00897b,stroke-width:2px
-    style K fill:#fff8e1,stroke:#f9a825,stroke-width:2px
-    style L fill:#ede7f6,stroke:#512da8,stroke-width:2px
-    style M fill:#c8e6c9,stroke:#2e7d32,stroke-width:3px
-    style N fill:#e1f5fe,stroke:#01579b,stroke-width:2px
-```
+![alt text](img/image.png)
 
 ### Các thành phần chính (Agents)
 

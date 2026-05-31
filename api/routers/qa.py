@@ -157,7 +157,7 @@ def _map_state_to_response(state: dict, processing_time: int) -> AnswerResponse:
         question=state.get("question", ""),
         answer=answer,
         citations=[
-            Citation(**{key: c.get(key) for key in ("text", "source", "position") if key in c})
+            Citation(**{key: c.get(key) for key in ("text", "source", "position", "display_id", "source_id", "url") if key in c})
             for c in get_citations(state)
         ],
         web_results=[

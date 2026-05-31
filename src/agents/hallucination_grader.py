@@ -94,6 +94,16 @@ def _extract_source_ids(text: str) -> set[str]:
     }
 
 
+def _citation_source_ids(citation: Dict[str, Any]) -> set[str]:
+    source_ids = set()
+    source_id = str(citation.get("source_id") or "").strip()
+    if source_id:
+        source_ids.add(source_id.replace(" ", ""))
+    source_ids.update(_extract_source_ids(str(citation.get("source", ""))))
+    source_ids.update(_extract_source_ids(str(citation.get("text", ""))))
+    return source_ids
+
+
 def _valid_source_ids(documents: List[Dict], web_results: List[Dict] = None) -> set[str]:
     valid = {f"S{i}" for i, _ in enumerate(documents or [], 1)}
     valid.update({f"Web{i}" for i, _ in enumerate(web_results or [], 1)})
@@ -120,8 +130,7 @@ def _rule_based_hallucination_check(
 
     for citation in citations or []:
         if isinstance(citation, dict):
-            cited_ids.update(_extract_source_ids(str(citation.get("source", ""))))
-            cited_ids.update(_extract_source_ids(str(citation.get("text", ""))))
+            cited_ids.update(_citation_source_ids(citation))
 
     invalid_ids = cited_ids - valid_ids
     if invalid_ids:
@@ -138,6 +147,11 @@ def _rule_based_hallucination_check(
     answer_numbers = _numeric_facts(answer)
     context_numbers = _numeric_facts(context_text)
     allowed_numbers = {re.sub(r"\D", "", source_id) for source_id in cited_ids}
+    allowed_numbers.update(
+        str(citation.get("display_id"))
+        for citation in citations or []
+        if isinstance(citation, dict) and citation.get("display_id") is not None
+    )
     unsupported_numbers = answer_numbers - context_numbers - allowed_numbers
     if unsupported_numbers:
         return f"Câu trả lời có số liệu không xuất hiện trong context: {sorted(unsupported_numbers)}"
@@ -146,7 +160,7 @@ def _rule_based_hallucination_check(
         citation
         for citation in citations or []
         if isinstance(citation, dict)
-        and _extract_source_ids(str(citation.get("source", "")) + str(citation.get("text", "")))
+        and _citation_source_ids(citation)
         and not citation.get("url")
     ]
     if missing_url_citations:

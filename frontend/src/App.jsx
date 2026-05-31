@@ -11,7 +11,7 @@ import {
   Loader2, 
   ChevronRight,
   ExternalLink,
-  ShieldAlert
+  ShieldCheck
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -40,6 +40,7 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [currentStatus, setCurrentStatus] = useState(null); // {node, message}
   const [streamingAnswer, setStreamingAnswer] = useState(null); 
+  const [activeCitation, setActiveCitation] = useState(null);
   const streamingAnswerRef = useRef(null);
   const messagesEndRef = useRef(null);
   const isProcessingRef = useRef(false); // Tránh bị double add message khi stream kết thúc
@@ -177,8 +178,42 @@ function App() {
     }
   };
 
+  const linkifyCitations = (content = '') => (
+    content.replace(/\[(\d+)\]/g, (_, id) => `[[${id}]](#citation-${id})`)
+  );
+
+  const markdownComponents = {
+    a: ({ href, children, ...props }) => {
+      const match = /^#citation-(\d+)$/.exec(href || '');
+      if (!match) return <a href={href} {...props}>{children}</a>;
+
+      const displayId = Number(match[1]);
+      return (
+        <button
+          type="button"
+          className={`citation-ref ${activeCitation === displayId ? 'active' : ''}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            setActiveCitation(prev => prev === displayId ? null : displayId);
+          }}
+          title={`Xem căn cứ [${displayId}]`}
+        >
+          {children}
+        </button>
+      );
+    }
+  };
+
+  const renderAnswer = (content) => (
+    <div className="answer-content">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+        {linkifyCitations(content)}
+      </ReactMarkdown>
+    </div>
+  );
+
   return (
-    <div className="app-container">
+    <div className="app-container" onClick={() => setActiveCitation(null)}>
       <header className="header glass">
         <div className="logo">
           <Gavel className="logo-icon" />
@@ -208,9 +243,11 @@ function App() {
               <div className={`bubble glass ${msg.role}`}>
                 {msg.role === 'user' ? msg.content : (
                   <>
-                    <div className="answer-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    <div className="answer-status">
+                      <ShieldCheck size={14} />
+                      <span>Đã tổng hợp với {msg.citations?.length || 0} căn cứ</span>
                     </div>
+                    {renderAnswer(msg.content)}
                     {msg.web_results?.length > 0 && (
                       <div className="web-results-section">
                         <h4 className="section-title"><Globe size={14} /> Nguồn tham khảo web</h4>
@@ -230,10 +267,19 @@ function App() {
                         <h4 className="section-title"><FileText size={14} /> Trích dẫn pháp luật</h4>
                         <ul className="citations-list">
                           {msg.citations.map((cite, idx) => (
-                            <li key={idx} className="citation-item">
-                              <span className="cite-index">[{idx + 1}]</span>
-                              <span className="cite-text">{cite.text}</span>
-                              <span className="cite-source"> — {cite.source}</span>
+                            <li
+                              key={idx}
+                              id={`citation-${cite.display_id || idx + 1}`}
+                              className={`citation-item ${activeCitation === (cite.display_id || idx + 1) ? 'active' : ''}`}
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <span className="cite-index">[{cite.display_id || idx + 1}]</span>
+                              <span className="cite-text">{cite.source || cite.text}</span>
+                              {cite.url && (
+                                <a href={cite.url} target="_blank" rel="noopener noreferrer" className="cite-open" title="Mở nguồn">
+                                  <ExternalLink size={13} />
+                                </a>
+                              )}
                             </li>
                           ))}
                         </ul>
@@ -251,6 +297,10 @@ function App() {
                 <Bot size={20} />
               </div>
               <div className="bubble glass assistant streaming">
+                <div className="answer-status progress-status">
+                  <Loader2 size={14} className="spin" />
+                  <span>{currentStatus?.message || 'Đang xử lý...'}</span>
+                </div>
                 <div className="stepper-container">
                   {STEPS.map((step) => {
                     const isActive = currentStatus?.node === step.id;
@@ -268,8 +318,8 @@ function App() {
 
                 <div className="answer-content">
                   {streamingAnswer.content ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {streamingAnswer.content}
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      {linkifyCitations(streamingAnswer.content)}
                     </ReactMarkdown>
                   ) : (
                     <div className="typing-indicator">
@@ -305,10 +355,19 @@ function App() {
                     <h4 className="section-title"><FileText size={14} /> Trích dẫn pháp luật</h4>
                     <ul className="citations-list">
                       {streamingAnswer.citations.map((cite, idx) => (
-                        <li key={idx} className="citation-item">
-                          <span className="cite-index">[{idx + 1}]</span>
-                          <span className="cite-text">{cite.text}</span>
-                          <span className="cite-source"> — {cite.source}</span>
+                        <li
+                          key={idx}
+                          id={`citation-${cite.display_id || idx + 1}`}
+                          className={`citation-item ${activeCitation === (cite.display_id || idx + 1) ? 'active' : ''}`}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <span className="cite-index">[{cite.display_id || idx + 1}]</span>
+                          <span className="cite-text">{cite.source || cite.text}</span>
+                          {cite.url && (
+                            <a href={cite.url} target="_blank" rel="noopener noreferrer" className="cite-open" title="Mở nguồn">
+                              <ExternalLink size={13} />
+                            </a>
+                          )}
                         </li>
                       ))}
                     </ul>
@@ -342,13 +401,13 @@ function App() {
           display: flex;
           flex-direction: column;
           height: 100vh;
-          max-width: 1000px;
+          max-width: 1120px;
           margin: 0 auto;
           position: relative;
         }
 
         .header {
-          padding: 1rem 2rem;
+          padding: 0.85rem 1.25rem;
           margin: 1rem;
           display: flex;
           justify-content: space-between;
@@ -367,15 +426,15 @@ function App() {
         }
 
         .logo h1 {
-          font-size: 1.25rem;
+          font-size: 1rem;
           font-weight: 600;
-          letter-spacing: -0.01em;
+          letter-spacing: 0;
         }
 
         .chat-area {
           flex: 1;
           overflow-y: auto;
-          padding: 1rem 2rem;
+          padding: 1rem 1.5rem;
           display: flex;
           flex-direction: column;
         }
@@ -383,7 +442,7 @@ function App() {
         .messages-container {
           display: flex;
           flex-direction: column;
-          gap: 1.5rem;
+          gap: 1.25rem;
           padding-bottom: 2rem;
         }
 
@@ -392,15 +451,25 @@ function App() {
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          height: 60vh;
+          height: 58vh;
           text-align: center;
           gap: 1rem;
         }
 
         .welcome-icon {
           color: var(--primary);
-          opacity: 0.5;
+          opacity: 0.9;
           margin-bottom: 1rem;
+        }
+
+        .welcome-screen h2 {
+          font-size: 1.65rem;
+          font-weight: 650;
+        }
+
+        .welcome-screen p {
+          color: var(--text-muted);
+          max-width: 560px;
         }
 
         .example-chips {
@@ -410,20 +479,23 @@ function App() {
         }
 
         .chip {
-          padding: 0.5rem 1rem;
+          padding: 0.55rem 0.85rem;
           font-size: 0.875rem;
           color: var(--text-muted);
+          background: var(--surface);
+          border: 1px solid var(--glass-border);
+          border-radius: 8px;
         }
 
         .chip:hover {
-          background: rgba(255, 255, 255, 0.1);
+          background: var(--surface-soft);
           color: var(--text-main);
         }
 
         .message-row {
           display: flex;
           gap: 1rem;
-          max-width: 85%;
+          max-width: 88%;
           animation: fadeIn 0.3s ease;
         }
 
@@ -433,47 +505,49 @@ function App() {
         }
 
         .avatar {
-          width: 36px;
-          height: 36px;
-          border-radius: 50%;
+          width: 32px;
+          height: 32px;
+          border-radius: 8px;
           display: flex;
           align-items: center;
           justify-content: center;
           flex-shrink: 0;
         }
 
-        .avatar.user { background: var(--primary); }
-        .avatar.assistant { background: var(--user-bubble); }
+        .avatar.user { background: var(--primary); color: white; }
+        .avatar.assistant { background: var(--surface-soft); color: var(--primary); border: 1px solid var(--glass-border); }
 
         .bubble {
-          padding: 1rem 1.25rem;
+          padding: 1rem 1.15rem;
           font-size: 0.95rem;
+          box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+          display: flex;
+          flex-direction: column;
         }
 
         .bubble.user {
           background: var(--primary);
-          border-bottom-right-radius: 4px;
           color: white;
         }
 
         .bubble.assistant {
           background: var(--card-bg);
-          border-bottom-left-radius: 4px;
         }
 
         .stepper-container {
           display: flex;
-          gap: 1.5rem;
-          margin-bottom: 1.5rem;
-          padding-bottom: 1rem;
+          gap: 0.75rem;
+          margin-bottom: 1rem;
+          padding-bottom: 0.85rem;
           border-bottom: 1px solid var(--glass-border);
+          overflow-x: auto;
         }
 
         .step {
           display: flex;
           align-items: center;
           gap: 0.5rem;
-          opacity: 0.3;
+          opacity: 0.45;
           transition: all 0.3s ease;
         }
 
@@ -500,6 +574,28 @@ function App() {
           white-space: nowrap;
         }
 
+        .answer-status {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.45rem;
+          color: var(--success);
+          background: #ecfdf5;
+          border: 1px solid #bbf7d0;
+          border-radius: 8px;
+          padding: 0.35rem 0.55rem;
+          font-size: 0.78rem;
+          font-weight: 600;
+          margin-bottom: 0.75rem;
+          order: 0;
+          align-self: flex-start;
+        }
+
+        .progress-status {
+          color: var(--primary);
+          background: #eff6ff;
+          border-color: #bfdbfe;
+        }
+
         .spin {
           animation: rotate 1s linear infinite;
         }
@@ -521,12 +617,14 @@ function App() {
         }
 
         .web-results-section {
-          margin-bottom: 1.5rem;
+          margin-top: 1rem;
+          order: 3;
+          opacity: 0.92;
         }
 
         .web-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+          grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
           gap: 0.5rem;
         }
  
@@ -538,6 +636,9 @@ function App() {
           gap: 0.1rem;
           position: relative;
           min-height: 60px;
+          background: var(--surface-soft);
+          border: 1px solid var(--glass-border);
+          border-radius: 8px;
         }
 
         .web-card.disabled {
@@ -546,7 +647,7 @@ function App() {
         }
 
         .web-card:hover {
-          background: rgba(255, 255, 255, 0.05);
+          background: #e8eef7;
         }
 
         .web-card-title {
@@ -571,9 +672,11 @@ function App() {
         }
 
         .answer-content {
-          margin: 1rem 0;
-          font-size: 0.95rem;
+          margin: 0.35rem 0 1rem;
+          font-size: 0.96rem;
           color: var(--text-main);
+          line-height: 1.75;
+          order: 1;
         }
 
         .answer-content p {
@@ -596,6 +699,33 @@ function App() {
         .answer-content strong {
           color: var(--primary);
           font-weight: 600;
+        }
+
+        .answer-content a {
+          color: var(--primary);
+        }
+
+        .citation-ref {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 1.45rem;
+          height: 1.25rem;
+          padding: 0 0.25rem;
+          border-radius: 6px;
+          background: #eff6ff;
+          color: var(--primary);
+          border: 1px solid #bfdbfe;
+          font-size: 0.78rem;
+          font-weight: 700;
+          vertical-align: baseline;
+        }
+
+        .citation-ref:hover,
+        .citation-ref.active {
+          background: var(--primary);
+          border-color: var(--primary);
+          color: white;
         }
 
         .typing-indicator {
@@ -624,6 +754,7 @@ function App() {
           margin-top: 1.5rem;
           padding-top: 1rem;
           border-top: 1px solid var(--glass-border);
+          order: 2;
         }
 
         .citations-list {
@@ -634,14 +765,48 @@ function App() {
         }
 
         .citation-item {
-          font-size: 0.85rem;
-          color: var(--text-muted);
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          align-items: start;
+          gap: 0.65rem;
+          font-size: 0.86rem;
+          color: var(--text-main);
+          background: #f8fafc;
+          border: 1px solid var(--glass-border);
+          border-radius: 8px;
+          padding: 0.65rem 0.75rem;
+          transition: border-color 0.2s ease, background 0.2s ease;
+        }
+
+        .citation-item.active {
+          background: #fffbeb;
+          border-color: #f3c969;
         }
 
         .cite-index {
           color: var(--accent-gold);
-          font-weight: 500;
-          margin-right: 0.5rem;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+
+        .cite-text {
+          min-width: 0;
+        }
+
+        .cite-open {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 24px;
+          height: 24px;
+          border-radius: 6px;
+          color: var(--text-muted);
+          text-decoration: none;
+        }
+
+        .cite-open:hover {
+          background: var(--surface-soft);
+          color: var(--primary);
         }
 
         .cite-source {
@@ -650,7 +815,7 @@ function App() {
         }
 
         .input-area {
-          padding: 2rem;
+          padding: 1.25rem 1.5rem 1.5rem;
           z-index: 10;
         }
 
@@ -659,12 +824,13 @@ function App() {
           align-items: center;
           padding: 0.5rem 0.5rem 0.5rem 1.5rem;
           gap: 1rem;
+          box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
         }
 
         .input-container button {
           width: 44px;
           height: 44px;
-          border-radius: 12px;
+          border-radius: 8px;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -682,6 +848,39 @@ function App() {
           font-size: 0.7rem;
           color: var(--text-muted);
           margin-top: 1rem;
+        }
+
+        @media (max-width: 720px) {
+          .header {
+            margin: 0.75rem;
+          }
+
+          .chat-area {
+            padding: 0.75rem;
+          }
+
+          .message-row {
+            max-width: 100%;
+            gap: 0.65rem;
+          }
+
+          .avatar {
+            display: none;
+          }
+
+          .example-chips {
+            flex-direction: column;
+            width: 100%;
+            max-width: 360px;
+          }
+
+          .web-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .input-area {
+            padding: 0.75rem;
+          }
         }
       `}</style>
     </div>

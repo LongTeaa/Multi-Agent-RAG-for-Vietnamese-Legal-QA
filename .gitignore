@@ -41,6 +41,7 @@ Thumbs.db
 # === Jupyter ===
 .ipynb_checkpoints/
 *.ipynb
+!notebooks/evaluate_legal_qa.ipynb
 
 # === Temporary & Scratch ===
 scratch/
@@ -65,3 +66,4 @@ scripts/test_keys.py
 scripts/sync_*.py
 
 data/processed/chunks.jsonl
+eval_reports/
