@@ -46,7 +46,7 @@ python scripts/test_key_rotation_observability.py
 
 Hệ thống được thiết kế dưới dạng một State Machine phức tạp, điều phối bởi LangGraph:
 
-![alt text](img\image.png)
+![alt text](img/image.png)
 
 ### Các thành phần chính (Agents)
 
