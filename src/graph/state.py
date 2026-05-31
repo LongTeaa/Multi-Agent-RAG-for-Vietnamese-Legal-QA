@@ -17,6 +17,7 @@ class Citation(TypedDict, total=False):
     position: int
     url: str
     source_id: str
+    display_id: int
     citation_id: str
     metadata: dict
 
@@ -103,4 +104,3 @@ def create_initial_state(question: str, user_id: str = "") -> GraphState:
         hallucination_retry_count=0,
         error=None,
     )
-

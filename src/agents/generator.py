@@ -61,7 +61,7 @@ def _page_label(metadata: Dict[str, Any]) -> str:
     return page_text
 
 
-def _source_label(source_id: str, metadata: Dict[str, Any]) -> str:
+def _source_label(source_id: str, metadata: Dict[str, Any], include_source_id: bool = True) -> str:
     law_name = metadata.get("ten_van_ban", "") or metadata.get("doc_id", "")
     law_number = metadata.get("so_hieu_van_ban", "")
     dieu = metadata.get("dieu", "")
@@ -70,7 +70,8 @@ def _source_label(source_id: str, metadata: Dict[str, Any]) -> str:
     table_id = metadata.get("table_id", "")
     page_text = _page_label(metadata)
 
-    parts = [f"[{source_id}]", law_name]
+    parts = [f"[{source_id}]"] if include_source_id else []
+    parts.append(law_name)
     if law_number:
         parts.append(f"số {law_number}")
     if level == "table":
@@ -92,9 +93,24 @@ def _source_map_from_documents(documents: List[Dict]) -> Dict[str, Dict[str, Any
         source_id = f"S{i}"
         source_map[source_id] = {
             "source_id": source_id,
-            "label": _source_label(source_id, metadata),
+            "label": _source_label(source_id, metadata, include_source_id=False),
             "url": metadata.get("source_url", ""),
             "metadata": metadata,
+        }
+    return source_map
+
+
+def _source_map_from_web(web_results: List[Dict] = None) -> Dict[str, Dict[str, Any]]:
+    source_map: Dict[str, Dict[str, Any]] = {}
+    for i, result in enumerate(web_results or [], 1):
+        source_id = f"Web{i}"
+        title = result.get("title", "") or "Nguồn Internet"
+        url = result.get("url", "")
+        source_map[source_id] = {
+            "source_id": source_id,
+            "label": f"{title} ({url})" if url else title,
+            "url": url,
+            "metadata": {"source_type": "web", "title": title},
         }
     return source_map
 
@@ -179,17 +195,38 @@ def _format_documents_and_web(
     return "\n".join(context_parts)
 
 
+def _canonical_source_id(source_id: str) -> str:
+    source_id = (source_id or "").strip()
+    if re.fullmatch(r"Web\s+\d+", source_id, flags=re.IGNORECASE):
+        return re.sub(r"\s+", "", source_id.title())
+    if re.fullmatch(r"S\d+", source_id, flags=re.IGNORECASE):
+        return source_id.upper()
+    return source_id
+
+
 def _extract_source_id(text: str) -> str:
     match = re.search(r"\[(S\d+|Web\s+\d+)\]", text or "", flags=re.IGNORECASE)
-    return match.group(1).replace(" ", " ") if match else ""
+    return _canonical_source_id(match.group(1)) if match else ""
+
+
+def _extract_citation_marker(text: str) -> tuple[str, str]:
+    match = re.search(r"\[((?:S\d+|Web\s+\d+)[^\]]*)\]", text or "", flags=re.IGNORECASE)
+    if not match:
+        return "", ""
+    marker = " ".join(match.group(1).split())
+    source_match = re.match(r"(S\d+|Web\s+\d+)", marker, flags=re.IGNORECASE)
+    source_id = _canonical_source_id(source_match.group(1) if source_match else "")
+    return marker, source_id
 
 
 def _normalize_citations(
     citations: Any,
     answer: str,
     documents: List[Dict],
+    web_results: List[Dict] = None,
 ) -> List[Dict]:
     source_map = _source_map_from_documents(documents)
+    source_map.update(_source_map_from_web(web_results))
     normalized: List[Dict] = []
 
     if isinstance(citations, list):
@@ -198,7 +235,10 @@ def _normalize_citations(
                 continue
             text = str(citation.get("text") or citation.get("source") or "").strip()
             source = str(citation.get("source") or "").strip()
-            source_id = _extract_source_id(text) or _extract_source_id(source)
+            marker, marker_source_id = _extract_citation_marker(text)
+            if not marker:
+                marker, marker_source_id = _extract_citation_marker(source)
+            source_id = marker_source_id or _extract_source_id(text) or _extract_source_id(source)
             source_info = source_map.get(source_id)
             fallback_text = f"Nguồn {source_id}" if source_id else "Nguồn tham khảo"
             normalized.append({
@@ -207,6 +247,7 @@ def _normalize_citations(
                 "position": int(citation.get("position", index) or index),
                 "url": source_info["url"] if source_info else str(citation.get("url") or ""),
                 "source_id": source_id,
+                "marker": marker,
                 "metadata": source_info["metadata"] if source_info else {},
             })
 
@@ -221,6 +262,7 @@ def _normalize_citations(
                 "position": len(normalized),
                 "url": source_info["url"],
                 "source_id": source_id,
+                "marker": source_id,
                 "metadata": source_info["metadata"],
             })
 
@@ -228,6 +270,78 @@ def _normalize_citations(
         normalized = _extract_citations(answer, documents)
 
     return normalized
+
+
+def _display_citations(
+    answer: str,
+    citations: List[Dict],
+    documents: List[Dict],
+    web_results: List[Dict] = None,
+) -> tuple[str, List[Dict]]:
+    """Rewrite internal [Sx] citations to user-facing [n] citations."""
+    source_map = _source_map_from_documents(documents)
+    source_map.update(_source_map_from_web(web_results))
+    marker_to_display: Dict[str, int] = {}
+    source_to_markers: Dict[str, List[str]] = {}
+
+    def remember_marker(marker: str) -> int:
+        source_id = _extract_citation_marker(f"[{marker}]")[1]
+        if marker not in marker_to_display:
+            marker_to_display[marker] = len(marker_to_display) + 1
+            if source_id:
+                source_to_markers.setdefault(source_id, []).append(marker)
+        return marker_to_display[marker]
+
+    def replace_marker(match: re.Match) -> str:
+        marker = " ".join(match.group(1).split())
+        return f"[{remember_marker(marker)}]"
+
+    display_answer = re.sub(
+        r"\[((?:S\d+|Web\s+\d+)[^\]]*)\]",
+        replace_marker,
+        answer or "",
+        flags=re.IGNORECASE,
+    )
+
+    display_citations: List[Dict] = []
+    used_display_ids: set[int] = set()
+    for citation in citations or []:
+        if not isinstance(citation, dict):
+            continue
+        marker = citation.get("marker") or _extract_citation_marker(str(citation.get("text", "")))[0]
+        source_id = citation.get("source_id") or _extract_citation_marker(f"[{marker}]")[1]
+        if not marker and source_id:
+            marker = source_to_markers.get(source_id, [source_id])[0]
+        display_id = remember_marker(marker) if marker else len(marker_to_display) + 1
+        if display_id in used_display_ids:
+            continue
+        used_display_ids.add(display_id)
+        source_info = source_map.get(source_id, {})
+        display_citations.append({
+            **citation,
+            "display_id": display_id,
+            "source_id": source_id,
+            "source": source_info.get("label") or citation.get("source", ""),
+            "url": source_info.get("url") or citation.get("url", ""),
+        })
+
+    for marker, display_id in marker_to_display.items():
+        if display_id in used_display_ids:
+            continue
+        source_id = _extract_citation_marker(f"[{marker}]")[1]
+        source_info = source_map.get(source_id, {})
+        display_citations.append({
+            "text": f"Citation [{display_id}]",
+            "source": source_info.get("label", ""),
+            "position": len(display_citations),
+            "url": source_info.get("url", ""),
+            "source_id": source_id,
+            "display_id": display_id,
+            "metadata": source_info.get("metadata", {}),
+        })
+
+    display_citations.sort(key=lambda item: item.get("display_id") or 0)
+    return display_answer, display_citations
 
 
 def _extract_citations(answer: str, documents: List[Dict]) -> List[Dict]:
@@ -393,10 +507,11 @@ def generator_node(state: GraphState) -> Dict[str, Any]:
         
         # Try to use citations from LLM, fallback to extraction
         try:
-            citations = _normalize_citations(result.get("citations"), answer, documents)
+            citations = _normalize_citations(result.get("citations"), answer, documents, web_results)
         except Exception as e:
             logger.warning(f"Error extracting citations: {e}")
             citations = _extract_citations(answer, documents)
+        answer, citations = _display_citations(answer, citations, documents, web_results)
         
         citation_ids = put_citations(trace_id, citations)
         logger.info(f"Generated answer with {len(citations)} citations")

@@ -11,6 +11,9 @@ class Citation(BaseModel):
     text: str = Field(..., description="The segment of text being cited.")
     source: str = Field(..., description="The name or reference of the document source.")
     position: int = Field(..., description="The position in the answer where the citation occurs.")
+    display_id: Optional[int] = Field(None, description="The user-facing citation number.")
+    source_id: Optional[str] = Field(None, description="The internal source id, such as S1 or Web1.")
+    url: Optional[str] = Field(None, description="The source URL when available.")
 
 
 class WebResult(BaseModel):

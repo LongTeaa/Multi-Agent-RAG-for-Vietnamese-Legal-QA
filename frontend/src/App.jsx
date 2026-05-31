@@ -231,7 +231,7 @@ function App() {
                         <ul className="citations-list">
                           {msg.citations.map((cite, idx) => (
                             <li key={idx} className="citation-item">
-                              <span className="cite-index">[{idx + 1}]</span>
+                              <span className="cite-index">[{cite.display_id || idx + 1}]</span>
                               <span className="cite-text">{cite.text}</span>
                               <span className="cite-source"> — {cite.source}</span>
                             </li>
@@ -306,7 +306,7 @@ function App() {
                     <ul className="citations-list">
                       {streamingAnswer.citations.map((cite, idx) => (
                         <li key={idx} className="citation-item">
-                          <span className="cite-index">[{idx + 1}]</span>
+                          <span className="cite-index">[{cite.display_id || idx + 1}]</span>
                           <span className="cite-text">{cite.text}</span>
                           <span className="cite-source"> — {cite.source}</span>
                         </li>
