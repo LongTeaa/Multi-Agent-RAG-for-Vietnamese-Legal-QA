@@ -61,8 +61,60 @@ def _page_label(metadata: Dict[str, Any]) -> str:
     return page_text
 
 
-def _source_label(source_id: str, metadata: Dict[str, Any], include_source_id: bool = True) -> str:
+def _title_from_slug(slug: str) -> str:
+    words = [word for word in re.split(r"[-_\s]+", slug or "") if word and not word.isdigit()]
+    if not words:
+        return ""
+
+    prefix = "Luật"
+    if words[:2] == ["bo", "luat"]:
+        prefix = "Bộ luật"
+        words = words[2:]
+    elif words[0] == "luat":
+        words = words[1:]
+
+    stop_words = {
+        "so", "qh", "qh12", "qh13", "qh14", "qh15", "pdf", "html", "d1",
+        "2024", "2025", "2026", "2019", "2007", "2012", "2014",
+    }
+    meaningful = [word for word in words if word not in stop_words and not re.fullmatch(r"\d+", word)]
+    if not meaningful:
+        return ""
+    return f"{prefix} {' '.join(meaningful).capitalize()}"
+
+
+def _clean_law_name(metadata: Dict[str, Any]) -> str:
     law_name = metadata.get("ten_van_ban", "") or metadata.get("doc_id", "")
+    doc_id = metadata.get("doc_id", "")
+    source_url = metadata.get("source_url", "")
+    source_path = metadata.get("source_path", "")
+
+    known_titles = {
+        "45_2019_qh14": "Bộ luật Lao động",
+        "luat_109_2025_qh15_pdf": "Luật Thuế thu nhập cá nhân",
+        "luat_116_2025_qh15_pdf": "Luật An ninh mạng",
+    }
+    if doc_id in known_titles:
+        return known_titles[doc_id]
+
+    url_match = re.search(r"/([^/?#]+?)(?:-\d{4})?-so-", source_url or "")
+    if url_match:
+        title = _title_from_slug(url_match.group(1))
+        if title:
+            return title
+
+    raw = re.sub(r"\.(pdf|docx?|html?)$", "", str(source_path or law_name), flags=re.IGNORECASE)
+    raw = raw.split("/")[-1].split("\\")[-1]
+    raw = re.sub(r"\bPDF\b", "", raw, flags=re.IGNORECASE)
+    raw = raw.replace("_", " ").replace("-", " ")
+    raw = " ".join(raw.split())
+    if raw.lower().startswith("luat "):
+        return "Luật " + raw[5:]
+    return raw or law_name
+
+
+def _source_label(source_id: str, metadata: Dict[str, Any], include_source_id: bool = True) -> str:
+    law_name = _clean_law_name(metadata)
     law_number = metadata.get("so_hieu_van_ban", "")
     dieu = metadata.get("dieu", "")
     khoang = metadata.get("khoang", "")
